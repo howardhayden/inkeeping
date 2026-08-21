@@ -1,0 +1,17 @@
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/jost-latin.woff2") format("woff2");
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; padding: clamp(1.25rem, 5vw, 4rem); background: #fefefc; color: #1b1d1a; font: 400 1rem/1.5 "Jost", system-ui, sans-serif; }
+main { width: min(42rem, 100%); margin: 12vh auto 0; padding-top: 1.2rem; border-top: 2px solid #0b4705; }
+.label { margin: 0 0 .4rem; color: #0b4705; font: 600 .78rem/1.2 ui-monospace, monospace; letter-spacing: .08em; }
+h1 { margin: 0; font-size: clamp(2rem, 7vw, 4.5rem); font-weight: 400; line-height: 1; letter-spacing: -.04em; }
+p { color: #61675f; }
+a { display: inline-block; min-height: 44px; margin-top: 1rem; padding: .65rem .85rem; border: 1px solid #0b4705; color: #0b4705; text-underline-offset: .2em; }
+a:focus-visible { outline: 2px solid #950f22; outline-offset: 3px; }

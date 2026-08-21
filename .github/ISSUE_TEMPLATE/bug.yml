@@ -1,0 +1,42 @@
+name: Defect report
+description: Report reproducible behavior that differs from the documented contract.
+title: "[Defect] "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include restricted records, credentials, or security-sensitive exploit details. Use the Security tab for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Release and commit
+      description: Version, commit SHA, or deployment date.
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Workflow
+      options: [Import, Catalog records, Service registers, Archives, Incidents, Revisions, Reports, Workspace storage, Deployment]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps using synthetic or redacted data.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and observed result
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Browser, version, operating system, zoom, and assistive technology when relevant.
+    validations:
+      required: true

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "incremental": false,
+    "plugins": [],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["worker/**/*.ts", "security-headers.ts"],
+  "exclude": ["node_modules", "dist"]
+}
