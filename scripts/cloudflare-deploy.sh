@@ -2,9 +2,6 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-project_root="$(cd "${script_dir}/.." && pwd)"
-configuration="${project_root}/wrangler.jsonc"
-wrangler="${project_root}/node_modules/.bin/wrangler"
 mode="${1:-}"
 
 case "${mode}" in
@@ -14,6 +11,14 @@ case "${mode}" in
     exit 64
     ;;
 esac
+
+if [[ "${mode}" == "dry-run" && "${SITES_ENV_READY:-}" != "1" ]]; then
+  exec "${script_dir}/sites-env.sh" -- "$0" "$@"
+fi
+
+project_root="$(cd "${script_dir}/.." && pwd)"
+configuration="${project_root}/wrangler.jsonc"
+wrangler="${project_root}/node_modules/.bin/wrangler"
 
 if [[ ! -x "${wrangler}" ]]; then
   echo "Wrangler is unavailable. Run npm ci before deployment." >&2
@@ -34,9 +39,13 @@ export CI="${CI:-1}"
 export WRANGLER_HIDE_BANNER=true
 export WRANGLER_SEND_METRICS=false
 export WRANGLER_WRITE_LOGS=false
+export DO_NOT_TRACK=1
 
 case "${mode}" in
   dry-run)
+    # `wrangler deploy --dry-run` is a local compile-and-validation gate. Keep
+    # it hermetic even when the calling environment supplies network proxies.
+    unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy || true
     exec "${wrangler}" deploy --config "${configuration}" --autoconfig=false --dry-run --strict --outdir "${project_root}/dist/wrangler-dry-run"
     ;;
   preview)

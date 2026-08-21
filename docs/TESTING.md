@@ -48,6 +48,8 @@ The gate expands to:
 
 The first failure stops the release command. A release record must preserve command, UTC time, commit SHA, environment, exit status, test totals, and relevant artifact/log locations. The current evidence record is [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md).
 
+The dry-run command is a no-upload packaging, configuration, and binding check. Its wrapper re-executes with repository-local writable `HOME`, `XDG_CONFIG_HOME`, and `TMPDIR` directories, disables Wrangler metrics and log writes, and removes inherited network proxies for that mode. Wrangler then runs with `--autoconfig=false --strict --dry-run --outdir dist/wrangler-dry-run`, so the result does not depend on a developer machine's global Wrangler configuration or proxy settings. This does not validate a Cloudflare account, DNS, TLS, or live response behavior. Preview and production deployment commands retain their authenticated network environment.
+
 Focused commands are useful during development but do not replace `release:check`:
 
 ```sh

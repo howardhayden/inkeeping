@@ -144,6 +144,7 @@ Use these build settings:
 | Non-production branch deploys | Disabled; source also sets `preview_urls: false` |
 | Build variable `VITE_SITE_URL` | `https://inkeep.ing` |
 | Build variable `CI` | `1` |
+| Build variable `DO_NOT_TRACK` | `1` |
 | Build variable `WRANGLER_SEND_METRICS` | `false` |
 | Build variable `WRANGLER_WRITE_LOGS` | `false` |
 | Build variable `SKIP_DEPENDENCY_INSTALL` | `1`; the reviewed build command performs the single locked `npm ci` install |

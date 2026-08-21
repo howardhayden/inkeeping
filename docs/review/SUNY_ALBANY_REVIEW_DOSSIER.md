@@ -182,7 +182,7 @@ The repository distinguishes four classes:
 - **Manual:** a human task, browser, visual, accessibility, or workflow review is required.
 - **External:** evidence belongs to an institutional account, policy, vendor, live host, or approval system.
 
-The detailed mapping is [Review evidence matrix](REVIEW_EVIDENCE_MATRIX.md). [Validation report](../VALIDATION_REPORT.md) records a fresh-build 139-test pass, dependency audit, and static artifact validation against a specified modified working tree, while explicitly leaving the strict Wrangler dry run, immutable release gate, and external acceptance pending. Changes after that evidence time invalidate affected results. A formal review packet must substitute an immutable commit and attach fresh release, live-host, accessibility, interoperability, recovery, and governance records.
+The detailed mapping is [Review evidence matrix](REVIEW_EVIDENCE_MATRIX.md). [Validation report](../VALIDATION_REPORT.md) records a complete working-tree release-gate pass—including fresh builds, 139 tests, dependency audit, artifact validation, and strict Wrangler dry run—against a specified modified working tree. Changes after that evidence time invalidate affected results. A formal review packet must substitute an immutable commit and attach CI, live-host, accessibility, interoperability, recovery, and governance records.
 
 ## Principal residual risks
 

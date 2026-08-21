@@ -4,38 +4,38 @@
 
 | Field | Value |
 | --- | --- |
-| Report ID | `VR-2026-08-21-03` |
-| Evidence time | 2026-08-21T03:06:29Z |
-| Repository base commit | `5de7470653f0cf502f990793b01e3522e7e328be` |
+| Report ID | `VR-2026-08-21-04` |
+| Evidence time | 2026-08-21T23:06:17Z |
+| Repository base commit | `48c02336559c34366d739d1727e833cbd6115264` |
 | Candidate state | Modified working tree; not an immutable release commit |
 | Execution environment | Linux 6.18.35 x86_64; Node.js v24.19.0; npm 11.9.0 |
 | Prepared for | Engineering assurance review |
-| Release decision | **Pending** — lint, all TypeScript targets, fresh verified builds, 139 tests, dependency audit, and static Cloudflare artifact validation passed; a Wrangler dry run, immutable release commit, live-host checks, and external acceptance evidence remain outstanding |
+| Release decision | **Pending** — the complete local release gate passed, including lint, all TypeScript targets, fresh verified builds, 139 tests, dependency audit, static Cloudflare artifact validation, and strict Wrangler dry run; an immutable release commit, live-host checks, and external acceptance evidence remain outstanding |
 
 This report records commands actually executed against the identified working tree. It is not a certification, deployment record, accessibility-conformance claim, standards-conformance claim, or vendor-acceptance claim. A change to implementation, tests, dependencies, build configuration, or generated artifacts invalidates the affected result until the command is rerun.
 
 ## Executed release evidence
 
-### Fresh verification gate
+### Complete release gate
 
 Command:
 
 ```sh
-VITE_SITE_URL=https://inkeep.ing npm run verify
+VITE_SITE_URL=https://inkeep.ing npm run release:check
 ```
 
 Result: **PASS**.
 
 The command completed, in order:
 
-1. ESLint across the repository;
-2. TypeScript checks for the application, checkpoint adapter/worker, and tooling configurations;
-3. a fresh Vite production application build;
-4. a fresh Sites checkpoint-adapter build;
-5. Cloudflare static-asset artifact validation; and
-6. all `tests/*.test.mjs` files.
+1. `npm run lint` across the repository;
+2. `npm run typecheck` for the application, checkpoint adapter/worker, and tooling configurations;
+3. `npm test`, comprising fresh Vite application and Sites checkpoint-adapter builds, artifact validation, and all `tests/*.test.mjs` files;
+4. `npm run audit:dependencies`, the high-severity dependency advisory audit;
+5. `npm run validate:cloudflare`, repeating static-asset artifact validation after the audit; and
+6. `npm run deploy:dry-run`, whose wrapper validates the artifact once more before the strict, no-upload Wrangler deployment check.
 
-Node test-runner result: **139 tests, 139 passed, 0 failed, 0 cancelled, 0 skipped, 0 todo**. Node-reported duration: 1208.76011 ms.
+Node test-runner result: **139 tests, 139 passed, 0 failed, 0 cancelled, 0 skipped, 0 todo**. Node-reported duration: 1593.485962 ms.
 
 Fresh artifact sizes reported by Vite:
 
@@ -81,15 +81,17 @@ git diff --check
 
 Result: **PASS** — no whitespace errors were reported.
 
-### Wrangler dry-run attempt
+### Wrangler dry run
 
-Command attempted:
+Command:
 
 ```sh
 VITE_SITE_URL=https://inkeep.ing npm run deploy:dry-run
 ```
 
-Result: **NO WRANGLER RESULT**. The execution environment disconnected the network-mediated command after approximately one second, before approval could complete. Wrangler did not return a validation result, and the command is not recorded as passed or failed. `npm run release:check` therefore has not passed in this environment. Run the same strict dry-run in authorized local or CI infrastructure and retain its actual output.
+Result: **PASS**. Wrangler 4.125.0 read 17 static assets, reported a total upload of 0.31 KiB (0.22 KiB gzip), found no bindings, and exited at `--dry-run` without uploading or deploying.
+
+The earlier managed-runtime failure was caused by environmental leakage: Wrangler inherited network proxy variables and attempted to use a global configuration location that was not writable. The dry-run path now self-wraps in a repository-local writable runtime and removes inherited HTTP, HTTPS, and all-proxy variables before invoking Wrangler. This isolation is limited to the local compile-and-validation dry run; preview and production deployment paths retain their authenticated network environment. The corrected command also passed when deliberately invoked with nonresponsive proxy endpoints.
 
 ## Control results represented in the passing suite
 
@@ -144,7 +146,15 @@ These SHA-256 values identify selected files at the evidence time. They are not 
 | `tests/archival-schemas.test.mjs` | `e1f870066b6f05c7839145b8da11a8d71ece152ed8b11933c3b137d7fcd1a578` |
 | `tests/interface-contracts.test.mjs` | `af58696d71cc27bb8b6c3cdcc76e52ebc8f8b3774b2cfab26d2bb34ed6e4fcaf` |
 | `tests/documentation-contracts.test.mjs` | `187355cbcb5163caa2ab7ebeda6d483e7e53475b439bf2daf3a43d8e9e0ed808` |
-| `package-lock.json` | `ee469e29e414d5eee0bb739b16b228ed25b2151e865d5529370fa7498cef7b1f` |
+| `tests/production-contracts.test.mjs` | `c2505ba36b3ce434de824cfea054ba351d8f3b7822f9a965b55116189e3d57dc` |
+| `scripts/cloudflare-deploy.sh` | `6bbba44dc3aefbfd8ed65d9139ba2b6ac598cd2a3410d4c5588e5d2a5b56bf4b` |
+| `scripts/sites-env.sh` | `2e494e4d11ccb0a60ffff49824503fb6c9f05e5ea924a4c0e68d1cafa6c36ffb` |
+| `.github/workflows/ci.yml` | `d561f0c4e7f0bd3d12571767f1c42e2a60d757690b06f52329428b448e5933f0` |
+| `docs/DEPLOYMENT.md` | `6dca0997596fbb41f83dbfff7e52c76639ed305b14eb9efa1f11c4a60fd34247` |
+| `package.json` | `a0f41d70a8225c66a8f1c31c568c1ae359a99590d3a8376fcac51bf6dfc43f1c` |
+| `package-lock.json` | `f0d9a17b6051393adf7e4e00c26a0b0c8163c395d0e8e42322e69391d69e7733` |
+| `wrangler.jsonc` | `ea1baeec10327439fbc8ecf37cab84af64f2d6df197eb5eed51da9572b87ad54` |
+| `scripts/validate-cloudflare-build.mjs` | `8c549ccb6fe98fcf2bb4999447603b246d63aa98b24438c5c00874c1ffc2e1b5` |
 | `dist/client/index.html` | `e791e11d44ced772415d4587a0968fd4d16b393ac2751e0f10e11effdf83e95e` |
 | `dist/client/assets/index-BymJpo8m.js` | `f1479bb796db5a35e58e8126fcf27db080323216c9a5aab226e7fe83ccaf5b83` |
 | `dist/client/assets/index-DSwMZGtL.css` | `65cd38692303b94aee78ea1c74e774913a1de1030a397023c696452433fd0093` |
@@ -156,7 +166,6 @@ The working-tree fingerprints are subordinate to an immutable release commit. Bu
 
 The following remain required before a production acceptance decision:
 
-- strict Wrangler dry-run output from authorized infrastructure;
 - immutable commit/tag and CI log for the exact candidate;
 - canonical-domain DNS, TLS, response-header, cache, redirect, and browser Network-panel capture;
 - Cloudflare, GitHub, and Hover account/security/privacy configuration review;
@@ -189,4 +198,4 @@ The following remain required before a production acceptance decision:
 
 ## Conclusion
 
-The current modified working tree passed the complete fresh-build verification gate, all 139 tests, the dependency audit, and static Cloudflare artifact validation. The recorded controls support the quoted hostile-import, loss-prevention, pagination, and plaintext-disclosure behaviors for this candidate. Production acceptance remains pending because the strict Wrangler dry run did not execute and the immutable, live-host, accessibility, interoperability, recovery, and institutional-governance evidence is not yet complete.
+The current modified working tree passed the complete release gate: fresh builds, all 139 tests, the dependency audit, static Cloudflare artifact validation, and the strict Wrangler dry run. The recorded controls support the hostile-import, loss-prevention, pagination, and plaintext-disclosure behaviors for this candidate. Production acceptance remains pending only on the immutable release/CI record and the live-host, accessibility, interoperability, recovery, and institutional-governance evidence identified above.

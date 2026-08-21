@@ -76,6 +76,10 @@ test("site origin configuration accepts only a canonical HTTPS origin", () => {
 test("production deployment refuses placeholder and checkpoint canonical origins", () => {
   assert.match(deployScript, /--production-origin/);
   assert.match(deployScript, /WRANGLER_HIDE_BANNER=true/);
+  assert.match(deployScript, /DO_NOT_TRACK=1/);
+  assert.match(deployScript, /SITES_ENV_READY/);
+  assert.match(deployScript, /sites-env\.sh/);
+  assert.match(deployScript, /unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy/);
   assert.equal((deployScript.match(/--autoconfig=false/g) ?? []).length, 2);
   assert.match(artifactValidator, /\.example/);
   assert.match(artifactValidator, /\.chatgpt\.site/);

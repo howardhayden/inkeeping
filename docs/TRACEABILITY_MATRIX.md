@@ -86,7 +86,7 @@ Status terms:
 | Source/configuration cannot prove live headers or absence of unexpected platform/network behavior. | Capture canonical-origin response headers and browser network activity after deployment. | Blocks production acceptance. |
 | Repository tests cannot establish vendor-profile interoperability. | Import/export representative institutional fixtures with named product versions/configurations. | Blocks workflow reliance for each unvalidated exchange path. |
 | Wrangler observability setting cannot establish all Cloudflare account logging/analytics behavior. | Complete platform privacy/security review and retain account evidence. | Blocks institutional privacy approval. |
-| Focused test results in the current validation report are not a full immutable release result. | Run `npm run release:check` on the release commit and complete the acceptance record. | Blocks release. |
+| Working-tree results in the current validation report are not an immutable release result. | Run `npm run release:check` on the release commit and complete the acceptance record. | Blocks release. |
 
 ## Change-control rule
 
