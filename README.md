@@ -103,4 +103,4 @@ The canonical production origin is [https://inkeep.ing](https://inkeep.ing), bui
 - [Data management and ethics](docs/review/DATA_MANAGEMENT_AND_ETHICS.md)
 - [Competency crosswalk](docs/review/COMPETENCY_CROSSWALK.md)
 
-Repository policy is in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md), [CHANGELOG.md](CHANGELOG.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Copyright is reserved; see [LICENSE.md](LICENSE.md).
+Repository policy is in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md), [CHANGELOG.md](CHANGELOG.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). IN KEEPING is released under the [MIT License](LICENSE).
