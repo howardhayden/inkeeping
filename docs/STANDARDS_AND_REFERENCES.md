@@ -1,0 +1,88 @@
+# Standards and reference register
+
+This register records the primary specifications used to name or design interchange features and the evidence level actually present in IN KEEPING. A linked specification is a design reference, not a conformance certificate.
+
+## Validation vocabulary
+
+| Level | Meaning |
+| --- | --- |
+| Implemented profile | Source code enforces the documented bounded syntax, namespaces, scalar rules, and cardinalities. |
+| Repository regression evidence | Automated tests exercise accepted/rejected fixtures, boundaries, escaping, and the application’s own export/re-import path. |
+| Official schema validation | An authoritative machine-readable schema is run against produced artifacts. **Not present for EAD4, EAD3, EAD 2002, MODS, MARCXML, OAI DC, CSL-JSON, or Schema.org in this repository.** |
+| Receiving-software validation | The artifact is staged in a named product/version and reviewed. This is an external deployment responsibility and is not claimed by the repository tests. |
+
+## XML and general data syntax
+
+| Reference | Use in the application | Evidence level |
+| --- | --- | --- |
+| [W3C XML 1.0](https://www.w3.org/TR/xml/) | XML declaration and well-formedness vocabulary | Restricted XML 1.0 pre-parser plus DOM parse; DTDs, entities, and processing instructions intentionally excluded |
+| [W3C Namespaces in XML](https://www.w3.org/TR/xml-names/) | Namespace-qualified XML format dispatch | Exact allowlists and foreign-namespace rejection; not a generic namespace processor profile |
+| [RFC 8259: JSON](https://www.rfc-editor.org/rfc/rfc8259) | JSON interchange syntax | Native JSON parser plus stricter depth/key/string/prototype limits |
+| [RFC 4180: CSV](https://www.rfc-editor.org/rfc/rfc4180) | CSV quoting model | Informational reference; strict equal-width tables and local list/formula conventions add an application profile |
+| [JSON-LD 1.1](https://www.w3.org/TR/json-ld11/) | JSON-LD vocabulary context | Bounded object/array/`@graph` mapping only; no expansion, compaction, remote-context retrieval, RDF dataset validation, or JSON-LD processor conformance |
+
+## Bibliographic and discovery formats
+
+| Reference | Implemented scope | Validation status |
+| --- | --- | --- |
+| [MARC 21 Format for Bibliographic Data](https://www.loc.gov/marc/bibliographic/) and [Leader](https://www.loc.gov/marc/bibliographic/bdleader.html) | Bibliographic leader checks and bounded mnemonic field/subfield mapping | Internal parser/serializer tests; mnemonic text is not ISO 2709 and is not certified against a cataloging policy |
+| [Library of Congress MARCXML](https://www.loc.gov/standards/marcxml/) and [MARC21slim XSD](https://www.loc.gov/standards/marcxml/schema/MARC21.xsd) | `http://www.loc.gov/MARC21/slim` record subset | Strict internal structure/namespace tests; official XSD is a reference and is not executed in this repository |
+| [Library of Congress MODS 3](https://www.loc.gov/standards/mods/v3/) | Bounded MODS 3 subset | Strict internal structure/namespace tests; six allowed semantic attribute locations are value-validated and retained as source evidence, all other attributes and arbitrary extensions reject. Own round-trip tests are not an official XSD run. |
+| [DCMI Metadata Terms: DCMES](https://www.dublincore.org/specifications/dublin-core/dces/) and [OAI DC XSD](https://www.openarchives.org/OAI/2.0/oai_dc.xsd) | Flat 15-element OAI DC batch subset | Internal allowlist and own round-trip tests; no semantic attributes are accepted on the document root, `oai_dc:dc` record, or DCMES leaves; XSD not run |
+| [OAI-PMH 2.0](https://www.openarchives.org/OAI/2.0/openarchivesprotocol.htm) | Namespace and `oai_dc:dc` record vocabulary only | The application is not an OAI-PMH repository, harvester, transport, or protocol implementation |
+| [Citation Style Language schema repository](https://github.com/citation-style-language/schema) | Citation-oriented CSL-JSON mapping | Bounded import/export tests; no schema run. The upstream repository itself distinguishes schema work from a fully normative CSL-JSON specification, so no blanket conformance claim is made. |
+| [Schema.org CreativeWork](https://schema.org/CreativeWork) | CreativeWork subclass projection | Local JSON-LD mapping tests; no Schema.org validator or consumer certification |
+| [BibTeX resources at TUG](https://tug.org/bibtex/) | Familiar entry and field syntax | Deliberately smaller safe subset: no strings, preambles, comments, macros, or concatenation; not full BibTeX conformance |
+| RIS | De facto two-letter tagged interchange used by reference managers | No stable open authoritative specification is asserted here. The implemented line profile is documented in [imports](IMPORTS.md) and must be tested in the receiving manager. |
+
+## Archival description and management
+
+| Reference | Implemented scope | Validation status |
+| --- | --- | --- |
+| [Library of Congress EAD overview](https://www.loc.gov/ead/) | Version lifecycle and authoritative schema links | Reference only |
+| [EAD 4.0 schema source](https://github.com/SAA-SDT/eas-schemas/tree/main/xml-schemas/ead) and [official EAD4 XSD](https://www.loc.gov/ead/v4/ead.xsd) | Current EAD namespace and vocabulary design | Internal EAD4 profile assertions and own-output re-import only. No official EAD4 XSD was copied into or executed by this repository. External XSD validation is pending. |
+| [Library of Congress EAD3 schema page](https://www.loc.gov/ead/ead3schema.html) and [official undeprecated EAD3 XSD](https://www.loc.gov/ead/ead3_undeprecated.xsd) | EAD3 namespace and schema reference | Internal EAD3 profile assertions and own-output re-import only. Official EAD3 XSD validation is external/pending. |
+| [Library of Congress EAD 2002 schema page](https://www.loc.gov/ead/eadschema.html) and [official EAD 2002 XSD](https://www.loc.gov/ead/ead.xsd) | Legacy EAD 2002 namespace/XLink reference | Internal legacy profile assertions and own-output re-import only. EAD 2002 is retained for installed-system exchange; the official EAD site marks it deprecated and unsupported by TS-EAS. Official XSD validation is external/pending. |
+| [AtoM 2.10 CSV import documentation](https://accesstomemory.org/en/docs/2.10/user-manual/import-export/csv-import/) and [AtoM CSV template resources](https://wiki.accesstomemory.org/Resources/CSV_templates) | Parent-before-child and release-specific CSV planning | IN KEEPING emits an ISAD-oriented crosswalk only. No AtoM release has been run by the repository test suite; use the target release’s template and staging import. |
+| [ArchivesSpace source repository](https://github.com/archivesspace/archivesspace) and [official API documentation](https://archivesspace.github.io/archivesspace/api/) | Release-specific archival-object/API planning | IN KEEPING emits a bounded archival-object CSV crosswalk, not API payloads or certified bulk-import templates. No vendor/release conformance is claimed. |
+| [DCTAP Primer](https://www.dublincore.org/specifications/dctap/primer/) and [DCTAP elements](https://www.dublincore.org/specifications/dctap/elements/) | Reviewable tabular application-profile terms; the primer is a DCMI Community Specification | Export-only local schema description; no DCTAP importer, prefix resolution, SHACL/JSON Schema generation, or data validation |
+
+### Exact EAD evidence statement
+
+The repository contains **no official EAD XSD files and no test that invokes an external XSD validator**. EAD tests cover application-defined namespace and structural assertions, hostile foreign structures, cardinality and hierarchy boundaries, escaping, mapped core fields, rejection of populated custom fields and altered populated-core semantics, privacy/publication state, and re-import of the application’s own serializers. EAD export has no local-note or scalar-joining fallback: a nonempty value outside the exact core, a populated core field with changed kind/cardinality/mapping, or a mismatched scalar/array shape rejects and must travel in the lossless schema package. These tests are valuable regression evidence, but they are not evidence that an export validates against the official EAD4, EAD3, or EAD 2002 XSD and are not evidence that ArchivesSpace, AtoM, or another product will ingest it.
+
+Before production delivery, run the exact output through the official schema for the declared EAD version, preserve the validator/version and output, then stage it in the receiving system. Resolve placeholder agency/control data and local extension conventions before approval.
+
+## Scalar vocabularies
+
+| Reference | Application behavior | Qualification |
+| --- | --- | --- |
+| [RFC 5646 / BCP 47](https://www.rfc-editor.org/rfc/rfc5646) | Archive description/material language syntax | Syntactic subset only; no Language Subtag Registry lookup or canonical case rewriting |
+| [Library of Congress EDTF](https://www.loc.gov/standards/datetime/) | Archive `edtf` values | Regex-bounded subset documented in [data formats](DATA_FORMATS.md); no claim of complete EDTF Level 0/1/2 validation |
+| [IANA Media Types registry](https://www.iana.org/assignments/media-types/media-types.xhtml) | Archive/service media-type syntax | Syntax check only; no registry lookup, deprecation check, or parameter semantics validation |
+| [Unicode Normalization Forms](https://www.unicode.org/reports/tr15/) | NFC handling for archival and service text | Stored values must use canonical NFC without surrounding whitespace; archival text additionally canonicalizes CR line endings |
+
+## Security-relevant local conventions
+
+The following are application contracts, not external standards:
+
+- public URLs must use HTTPS and pass the local private-host, credential, and secret-like query boundary;
+- SHA-256 import digests bind selected bytes but do not prove authorship or provenance outside the application;
+- formula-leading CSV/TSV cells receive a reversible apostrophe sentinel, but a receiving spreadsheet’s settings remain outside application control;
+- native JSON exact-key checks and prototype-key rejection narrow the accepted profile beyond generic JSON;
+- namespace allowlists deliberately reject extensible XML that could otherwise disappear during mapping;
+- OAI DC accepts no semantic attributes, while MODS accepts only its documented, validated attribute set and retains those values as source evidence;
+- archive-editor vocabulary and repeatable values split only at newlines; semicolons and surrounding whitespace remain data until canonical validation;
+- native archive references are safe local IDs even when DCTAP labels their node type `IRI`.
+
+## Release review cadence
+
+At each production release and before adding or changing a format:
+
+1. record the specification revision and authoritative URL;
+2. identify every syntax or vocabulary feature intentionally excluded;
+3. update accepted/rejected fixtures and boundary tests;
+4. run available official schemas and validators outside the application and retain their reports;
+5. stage output in every supported receiving-product version;
+6. update the crosswalk loss register and migration notes;
+7. avoid changing “implemented profile” to “conformant” unless the repository contains reproducible evidence for that precise claim.
