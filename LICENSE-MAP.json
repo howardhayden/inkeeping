@@ -1,0 +1,77 @@
+{
+  "format": "howardhayden-license-map-v2",
+  "audited": "2026-08-24",
+  "project": "IN KEEPING",
+  "source_available_not_open_source": true,
+  "default_license": "PolyForm-Noncommercial-1.0.0",
+  "commercial_use_granted": false,
+  "precedence": [
+    "explicit-file-notice",
+    "third-party-or-source-specific-notice",
+    "ordered-rules-below",
+    "default-license"
+  ],
+  "rules": [
+    {
+      "paths": [
+        "README.md",
+        "CHANGELOG.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "SUPPORT.md",
+        "docs/**"
+      ],
+      "license": "CC-BY-NC-SA-4.0",
+      "scope": "original prose and non-code figures; code, substantive code excerpts, and code-embedded data remain under the default software license"
+    },
+    {
+      "paths": [
+        "public/**/*.png",
+        "public/**/*.jpg",
+        "public/**/*.jpeg",
+        "public/**/*.webp",
+        "public/**/*.svg"
+      ],
+      "license": "CC-BY-NC-SA-4.0",
+      "scope": "separable original media only; third-party notices and source-identifying marks override"
+    },
+    {
+      "paths": [
+        "dist/**",
+        "out/**",
+        "site/**",
+        "build/**"
+      ],
+      "license": "SOURCE-COMPONENT-TERMS",
+      "scope": "generated artifact; embedded components retain source terms"
+    },
+    {
+      "paths": [
+        "LICENSES/**",
+        "THIRD_PARTY_LICENSES.txt",
+        "THIRD_PARTY_NOTICES.md",
+        "SBOM*.json",
+        "SBOM*.spdx.json"
+      ],
+      "license": "SOURCE-SPECIFIC-NOTICES",
+      "scope": "license texts, notices, or metadata; underlying components retain their own terms"
+    }
+  ],
+  "workflow_scope": [
+    "hostile-file intake, bounded parsing, quarantine, comparison, review, and explicit apply",
+    "catalog and archival normalization, schema, crosswalk, provenance, and loss-reporting workflows",
+    "workspace creation, explicit persistence, revision, audit-link, concurrency, backup, and recovery",
+    "operating-register, incident, decision, rollback, continuity, and institutional-handoff workflows",
+    "Technical Report, Public Notice, inventory, matrix, ticket, postmortem, and runbook generation",
+    "the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts"
+  ],
+  "permissive_exceptions": [],
+  "permissive_exception_requirements": {
+    "license": "MIT",
+    "requires_separate_file_or_package": true,
+    "requires_spdx_header": true,
+    "requires_explicit_map_entry": true
+  },
+  "historical_notice": "Earlier copies retain permissions attached to the license under which those copies were distributed."
+}

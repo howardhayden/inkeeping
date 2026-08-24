@@ -1,35 +1,82 @@
-# Repository licensing
+# Licensing
 
-IN KEEPING combines interoperable application code, original professional documentation, source-identifying design, and third-party components. Those categories are licensed separately so the software remains broadly adoptable while documentation adaptations remain shareable.
+Copyright (c) 2026 Hayden Howard.
 
-## Software and mixed source files — MIT
+This repository is **source-available for noncommercial use**. It is not offered
+as open-source software because the public software license excludes commercial
+purposes.
 
-Unless a file carries a more specific notice, application and Worker source, tests, scripts, package manifests, configuration, format parsers, schema implementations, and other technical source files are licensed under the [MIT License](LICENSE).
+Apply terms in this order:
 
-A source file that combines executable code with embedded schemas, sample records, interface copy, or other data is treated as software under the MIT License. The package metadata, lockfile, and citation record therefore remain consistent with the root software license.
+1. an explicit notice in a file;
+2. a third-party or source-specific notice;
+3. this document and `LICENSE-MAP.json`;
+4. the default software license.
 
-## Standalone documentation — CC BY-SA 4.0
+## Original software — PolyForm-Noncommercial-1.0.0
 
-Unless a file carries a more specific notice, original standalone documentation in `docs/`, repository governance and explanatory Markdown, and separately published notebook or report material are licensed under the [Creative Commons Attribution-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-sa/4.0/legalcode).
+Unless a narrower category below applies, original source code, stylesheets,
+configuration, tests, scripts, workers, code-defined schemas, code-embedded
+content or data, and generated executable software are licensed under the
+PolyForm Noncommercial License 1.0.0. The root `LICENSE` and
+`LICENSES/PolyForm-Noncommercial-1.0.0.txt` contain the complete terms.
 
-This Creative Commons license does not apply to software. It permits commercial and noncommercial reuse with attribution and requires adaptations to use the same license.
+The public license grants no commercial-use permission. See
+`COMMERCIAL-LICENSE.md` for the repository policy summary.
 
-## Marks and source identity — reserved
+## Project-specific workflow implementation
 
-The name **IN KEEPING**, project domains, logos, trade dress, and other source-identifying marks are not licensed as trademarks or service marks. Accurate descriptive and nominative use permitted by law remains unaffected.
+The default software license covers the copyrightable expression and
+implementation of:
+
+- hostile-file intake, bounded parsing, quarantine, comparison, review, and explicit apply
+- catalog and archival normalization, schema, crosswalk, provenance, and loss-reporting workflows
+- workspace creation, explicit persistence, revision, audit-link, concurrency, backup, and recovery
+- operating-register, incident, decision, rollback, continuity, and institutional-handoff workflows
+- Technical Report, Public Notice, inventory, matrix, ticket, postmortem, and runbook generation
+- the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts
+
+This identification does not claim exclusive rights over abstract ideas,
+methods, systems, facts, or functionality that copyright law does not protect.
+
+## General-purpose coding functions
+
+No function inside a covered file becomes permissively licensed merely because
+it could be useful elsewhere. At introduction of this policy, **no original
+source file or function is licensed under MIT**.
+
+A future utility may receive a permissive exception only after extraction into
+a separate file or package, removal of project-specific workflow expression, an
+explicit `SPDX-License-Identifier: MIT` notice, independent tests, and an exact
+entry in `LICENSE-MAP.json`. See `PERMISSIVE-EXCEPTIONS.md`.
+
+## Separable original documentation and media — CC-BY-NC-SA-4.0
+
+Original prose, explanatory diagrams, and non-code figures in the paths listed
+in `LICENSE-MAP.json` are licensed under Creative Commons
+Attribution-NonCommercial-ShareAlike 4.0 International. Software code,
+substantive code excerpts, code-embedded data, and executable definitions in a
+mixed file remain under `PolyForm-Noncommercial-1.0.0`. Third-party material retains its own terms.
+
+## Generated artifacts
+
+Generation does not erase source licenses. Executable bundles remain governed
+by the software terms for covered code; embedded documentation, media, fonts,
+and third-party components retain their source terms.
 
 ## Third-party material
 
-Third-party libraries, fonts, standards excerpts, icons, quotations, and other incorporated works retain their own notices and terms, including the notices in `THIRD_PARTY_NOTICES.md` and `public/fonts/OFL.txt`. Their specific terms override this repository-level map. No license is granted to material for which the licensor lacks authority.
+Third-party packages, fonts, algorithms, icons, photographs, audio, datasets,
+and other materials are not relicensed. Their own notices control.
 
-## File-level priority
+## Earlier snapshots
 
-The most specific notice controls. A notice in a file or its containing directory overrides this map. Generated output follows the license of its source unless the output carries a different notice.
+This policy is prospective. It does not withdraw permissions already attached
+to earlier copies distributed under MIT or another license. It governs files as
+offered from the commit introducing this policy forward, subject to ownership,
+file history, and source-specific notices.
 
-## Contributions
+## Names and marks
 
-Unless agreed otherwise in writing, a contribution is offered under the license governing the affected material above. A contributor represents that they have the right to submit the contribution. Third-party material must retain its original notices and terms.
-
-## Effective revision and earlier copies
-
-This map applies to revisions committed on or after **August 24, 2026**. It does not revoke rights already received in an earlier copy under the MIT License that accompanied that copy. Earlier MIT-licensed revisions remain available under their prior terms.
+No copyright license grants trademark, likeness, endorsement, or official-status
+rights. See `TRADEMARKS.md`.

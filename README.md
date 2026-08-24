@@ -104,3 +104,12 @@ The canonical production origin is [https://inkeep.ing](https://inkeep.ing), bui
 - [Competency crosswalk](docs/review/COMPETENCY_CROSSWALK.md)
 
 Repository policy is in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md), [CHANGELOG.md](CHANGELOG.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). IN KEEPING is released under the [MIT License](LICENSE).
+
+## Licensing
+
+IN KEEPING is **source-available for noncommercial use** under
+**PolyForm-Noncommercial-1.0.0**; commercial use requires a separate written license. Separable original documentation and media use **CC-BY-NC-SA-4.0**.
+No current source file or function has a permissive commercial-use exception.
+See [`LICENSING.md`](LICENSING.md),
+[`WORKFLOW-BOUNDARIES.md`](WORKFLOW-BOUNDARIES.md), and
+[`LICENSE-MAP.json`](LICENSE-MAP.json) for scope and historical limits.
