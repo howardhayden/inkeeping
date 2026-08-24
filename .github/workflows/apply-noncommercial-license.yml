@@ -1,0 +1,62 @@
+name: Apply noncommercial workflow licensing
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: noncommercial-license-${{ github.repository }}-${{ github.head_ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'chore/noncommercial-workflow-license-2026-08-24'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the review branch without third-party actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_HEAD_REF}"
+          git checkout -B "${GITHUB_HEAD_REF}" FETCH_HEAD
+
+      - name: Apply and validate the policy
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/howard-license-texts
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/howardhayden/folio/noncommercial-license-bundle-2026-08-24/.license-update/apply.py \
+            --output /tmp/apply-noncommercial-license.py
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/spdx/license-list-data/main/text/PolyForm-Noncommercial-1.0.0.txt \
+            --output /tmp/howard-license-texts/PolyForm-Noncommercial-1.0.0.txt
+          curl --fail --location --silent --show-error \
+            https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt \
+            --output /tmp/howard-license-texts/CC-BY-NC-SA-4.0.txt
+          grep -q 'PolyForm Noncommercial License 1.0.0' /tmp/howard-license-texts/PolyForm-Noncommercial-1.0.0.txt
+          grep -q 'Attribution-NonCommercial-ShareAlike 4.0 International' /tmp/howard-license-texts/CC-BY-NC-SA-4.0.txt
+          python3 /tmp/apply-noncommercial-license.py
+          rm -f .github/workflows/apply-noncommercial-license.yml
+          git diff --check
+          git status --short
+
+      - name: Commit the final repository-only changes
+        run: |
+          set -euo pipefail
+          git add --all
+          if git diff --cached --quiet; then
+            echo 'No licensing changes remain to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: prohibit commercial reuse and license product workflows'
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
