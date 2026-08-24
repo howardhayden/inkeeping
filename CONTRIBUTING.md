@@ -34,3 +34,7 @@ Update the changelog, affected documentation, risk register, traceability matrix
 ## Pull requests
 
 Use the repository template. Keep commits reviewable, do not bypass branch protection, and do not add secrets or real restricted records. GitHub Actions must be pinned to immutable full commit SHAs. Dependency changes must update the lockfile and pass dependency review.
+
+## Contribution licensing
+
+By submitting a contribution, you represent that you have the right to submit it and agree to license it under the terms governing the affected material in [LICENSING.md](LICENSING.md). Software and mixed source files follow the MIT License; separately licensed standalone documentation follows CC BY-SA 4.0. Third-party material must retain its original notices and terms.
