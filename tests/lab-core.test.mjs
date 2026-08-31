@@ -1297,7 +1297,7 @@ test("JSON quarantine preserves identity evidence and rejects deceptive JSON-LD 
   const publicId = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org/", "@id": "https://example.org/item/1", "@type": "Book", name: "Public linked identity", identifier: ["LOCAL-A", "LOCAL-B"] })], "public.jsonld", { type: "application/ld+json" }));
   assert.equal(publicId.blocked, false, publicId.summary);
   assert.match(publicId.records[0].id, /^JSONLD-[a-f0-9]{12}-1$/);
-  assert.ok(publicId.records[0].links.includes("https://example.org/item/1"));
+  assert.deepEqual(publicId.records[0].links, ["https://example.org/item/1"]);
   assert.deepEqual(publicId.records[0].identifiers.map((item) => item.value), ["LOCAL-A", "LOCAL-B"]);
 
   const privateId = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@id": "URN:IN-KEEPING:JSONLD-PRIVATE", "@type": "Book", name: "Private identity" })], "private.jsonld", { type: "application/ld+json" }));

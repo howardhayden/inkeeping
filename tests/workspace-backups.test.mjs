@@ -127,7 +127,8 @@ test("workspace-backup errors stay bounded under oversized hostile keys", async 
 
 test("workspace-backup JSON quarantine rejects duplicate decoded identities and lone surrogates", async () => {
   const text = await makeWorkspaceBackup(await createBlankWorkspace("Backup JSON quarantine"), AT);
-  const duplicate = text.replace("{", '{"schema":"forged",');
+  assert.equal(text[0], "{", "workspace backups must serialize as a top-level JSON object");
+  const duplicate = `{"schema":"forged",${text.slice(1)}`;
   const duplicateReview = await reviewWorkspaceBackup(new File([duplicate], "duplicate-schema.json", { type: WORKSPACE_BACKUP_MIME }));
   assert.equal(duplicateReview.blocked, true);
   assert.match(duplicateReview.summary, /duplicate member name "schema"/i);

@@ -425,7 +425,8 @@ test("schema-package quarantine rejects MIME mismatches, unknown fields, and pro
   assert.equal(mismatch.blocked, true);
   assert.match(mismatch.summary, /MIME|media type|content type|file type/i);
 
-  const duplicateIdentity = packet.replace("{", '{"schema":"forged",');
+  assert.equal(packet[0], "{", "schema packages must serialize as a top-level JSON object");
+  const duplicateIdentity = `{"schema":"forged",${packet.slice(1)}`;
   const duplicateReview = await reviewArchiveImport(new File([duplicateIdentity], "duplicate.archive-schema.json", { type: "application/json" }));
   assert.equal(duplicateReview.blocked, true);
   assert.match(duplicateReview.summary, /duplicate member name "schema"/i);
