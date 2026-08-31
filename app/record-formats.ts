@@ -1,4 +1,4 @@
-import { CATALOG_PACKET_SCHEMA, type CatalogRecord, type RecordFormat } from "./lab-core.ts";
+import { CATALOG_PACKET_SCHEMA, MAX_RECORDS, type CatalogRecord, type RecordFormat } from "./lab-core.ts";
 
 export type ExchangeFormat = "laclab-json" | "dublin-core" | "mods" | "csl-json" | "schema-jsonld" | "ris" | "bibtex" | "csv" | "tsv" | "marc-text";
 
@@ -31,6 +31,7 @@ export const DATA_FORMAT_RULES = [
 ] as const;
 
 export function formatRecords(records: CatalogRecord[], format: ExchangeFormat): string {
+  if (!Array.isArray(records) || records.length < 1 || records.length > MAX_RECORDS) throw new Error("Catalog export requires 1–1,000 records; no file was generated.");
   if (format === "laclab-json") return JSON.stringify({ schema: CATALOG_PACKET_SCHEMA, version: 1, kind: "catalog-batch", provenance: { label: "Formatted export", exportedAt: new Date().toISOString() }, records: records.map(packetRecord) }, null, 2);
   if (format === "dublin-core") return `<?xml version="1.0" encoding="UTF-8"?>\n<ik:collection xmlns:ik="https://hah.dev/ns/in-keeping/1" xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:dc="http://purl.org/dc/elements/1.1/">\n${records.map(dcRecord).join("\n")}\n</ik:collection>\n`;
   if (format === "mods") return `<?xml version="1.0" encoding="UTF-8"?>\n<modsCollection xmlns="http://www.loc.gov/mods/v3">\n${records.map(modsRecord).join("\n")}\n</modsCollection>\n`;

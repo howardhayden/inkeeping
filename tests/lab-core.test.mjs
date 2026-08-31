@@ -4,6 +4,7 @@ import test from "node:test";
 import { DOMParser } from "@xmldom/xmldom";
 import {
   activeRevision,
+  assessActiveEvidence,
   applyImport,
   CATALOG_PACKET_SCHEMA,
   checkRecords,
@@ -13,20 +14,39 @@ import {
   exportPacket,
   applyArchiveImport,
   makeOperationalDocument,
+  MAX_AUDIT_EVENTS,
+  prepareLocalWorkspace,
+  recordEvidenceDisposition,
+  recordWorkspaceAction,
   reviewImport,
   rollbackTo,
   updateIncident,
   upsertServiceRecord,
   updateConfig,
   updateCatalogRecord,
+  upsertArchiveSchema,
   validateWorkspaceSnapshot,
   verifyAudit,
 } from "../app/lab-core.ts";
-import { makeArchiveSchema } from "../app/archival-schemas.ts";
+import { canonicalDigest as canonicalEvidenceDigest } from "../app/evidence-authority.ts";
+import { formatArchive, makeArchiveSchema, reviewArchiveImport } from "../app/archival-schemas.ts";
 import { EXCHANGE_FORMATS, RECORD_FORMATS, formatRecords } from "../app/record-formats.ts";
+import { makeServiceRecord } from "../app/service-register.ts";
 import { MAX_XML_ATTRIBUTES_PER_ELEMENT, MAX_XML_DEPTH, MAX_XML_ELEMENTS, assertSafeXmlText } from "../app/xml-safety.ts";
 
 globalThis.DOMParser = DOMParser;
+
+const evidenceDisposition = (overrides = {}) => ({
+  decision: "admit-unverified",
+  claimedOrigin: "direct-export",
+  custodyNote: "Selected directly from the claimed source system for review.",
+  actorRoleClaim: "Metadata continuity reviewer",
+  rationale: "Admit only as unverified working evidence pending external reconciliation.",
+  policyReference: "TEST-POLICY-001",
+  atBrowser: "2026-08-31T00:00:00.000Z",
+  timeBasis: "browser-clock-untrusted",
+  ...overrides,
+});
 
 test("fixture workspace exposes deterministic operational findings", async () => {
   const workspace = await createFixtureWorkspace();
@@ -111,13 +131,18 @@ test("valid versioned JSON is reviewed then applied atomically", async () => {
   assert.equal(review.blocked, false);
   assert.equal(review.records.length, 1);
   const blank = await createBlankWorkspace();
-  const applied = await applyImport(blank, review);
+  const applied = await applyImport(blank, review, evidenceDisposition());
   assert.equal(activeRevision(applied).records.length, 1);
   assert.notEqual(applied.activeRevisionId, blank.activeRevisionId);
   const exported = JSON.parse(exportPacket(applied));
   assert.equal(exported.schema, CATALOG_PACKET_SCHEMA);
   assert.equal(exported.records[0].source, undefined);
-  assert.equal(applied.audit.at(-1).target, `sha256:${review.digest} · ${review.format} · ${review.filename}`);
+  assert.match(applied.audit.at(-1).target, new RegExp(`^evidence:[a-f0-9]{64} · source:${review.digest}$`));
+  assert.equal(applied.evidenceAuthority.length, 1);
+  assert.equal(applied.evidenceAuthority[0].disposition.decision, "admit-unverified");
+  assert.equal(applied.evidenceApplications.length, 1);
+  assert.equal(applied.evidenceApplications[0].outcome, "applied");
+  assert.equal(applied.evidenceApplications[0].resultingRevisionId, applied.activeRevisionId);
 });
 
 test("catalog apply revalidates quarantined provenance", async () => {
@@ -127,12 +152,150 @@ test("catalog apply revalidates quarantined provenance", async () => {
   };
   const review = await reviewImport(new File([JSON.stringify(packet)], "provenance.in-keeping.json", { type: "application/json" }));
   assert.equal(review.blocked, false);
-  const forged = { ...review, digest: "0".repeat(64), format: "csv", filename: "forged.csv" };
+  const forged = structuredClone(review);
+  forged.digest = "0".repeat(64);
+  forged.format = "csv";
+  forged.filename = "forged.csv";
+  forged.records[0].title = "Substituted after review";
+  forged.records[0].source.digest = forged.digest;
+  forged.records[0].source.format = forged.format;
+  forged.records[0].source.label = forged.filename;
   const blank = await createBlankWorkspace();
-  const rejected = await applyImport(blank, forged);
+  const rejected = await applyImport(blank, forged, evidenceDisposition());
   assert.equal(rejected.activeRevisionId, blank.activeRevisionId);
   assert.equal(rejected.audit.at(-1).action, "Reject import");
   assert.equal(rejected.audit.at(-1).outcome, "rejected");
+});
+
+test("structurally valid evidence requires an explicit disposition and never becomes locally authoritative", async () => {
+  const fabricatedPacket = {
+    schema: CATALOG_PACKET_SCHEMA, version: 1, kind: "catalog-batch", provenance: { label: "Fabricated but valid" },
+    records: [{ id: "FABRICATED-1", title: "Invented evidence", creators: ["Unknown claimant"], year: "2026", format: "Book", identifiers: [], links: [], availability: "Check availability", edition: "", location: "", suppressed: false, publicVisible: true, requestable: false }],
+  };
+  const review = await reviewImport(new File([JSON.stringify(fabricatedPacket)], "fabricated.in-keeping.json", { type: "application/json" }));
+  assert.equal(review.blocked, false);
+  const blank = await createBlankWorkspace("Evidence admission");
+
+  await assert.rejects(applyImport(blank, review), /disposition.*plain object|no decision defaults/i);
+  await assert.rejects(applyImport(blank, review, { ...evidenceDisposition(), verified: true }), /Unknown evidence disposition field: verified/i);
+
+  const rejected = await applyImport(blank, review, evidenceDisposition({ decision: "reject", rationale: "Origin claim could not be reconciled." }));
+  assert.equal(activeRevision(rejected).records.length, 0);
+  assert.equal(rejected.evidenceAuthority.at(-1).disposition.decision, "reject");
+  assert.equal(rejected.evidenceApplications.at(-1).outcome, "not-applied");
+
+  const admitted = await applyImport(blank, review, evidenceDisposition());
+  assert.equal(activeRevision(admitted).records.length, 1);
+  assert.equal(admitted.evidenceAuthority.at(-1).disposition.decision, "admit-unverified");
+  assert.equal(admitted.evidenceApplications.at(-1).outcome, "applied");
+  assert.equal("authoritative" in admitted.evidenceAuthority.at(-1), false);
+  await assert.doesNotReject(validateWorkspaceSnapshot(admitted));
+});
+
+test("destination rejection retains the exact evidence decision and a linked non-application outcome", async () => {
+  const blank = await createBlankWorkspace("Destination conflict decisions");
+  const firstReview = await reviewImport(new File(["id,title\nSAME-1,First source"], "first.csv", { type: "text/csv" }));
+  const first = await applyImport(blank, firstReview, evidenceDisposition());
+  const secondReview = await reviewImport(new File(["id,title\nSAME-1,Contradictory source"], "second.csv", { type: "text/csv" }));
+  const conflicted = await applyImport(first, secondReview, evidenceDisposition({ atBrowser: "2026-08-31T00:01:00.000Z" }));
+
+  assert.equal(conflicted.activeRevisionId, first.activeRevisionId);
+  assert.equal(conflicted.evidenceAuthority.length, 2);
+  assert.equal(conflicted.evidenceAuthority.at(-1).evidence.source.filename, "second.csv");
+  assert.equal(conflicted.evidenceApplications.length, 2);
+  assert.equal(conflicted.evidenceApplications.at(-1).outcome, "not-applied");
+  assert.equal(conflicted.evidenceApplications.at(-1).reason, "destination-identity-conflict");
+  assert.equal(conflicted.evidenceApplications.at(-1).decisionRecordSha256, conflicted.evidenceAuthority.at(-1).recordSha256);
+  assert.equal(conflicted.audit.at(-1).action, "Reject conflicting import");
+  await assert.doesNotReject(validateWorkspaceSnapshot(conflicted));
+});
+
+test("application outcomes cannot contradict their source kind or target a nonexistent current revision", async () => {
+  const blank = await createBlankWorkspace("Application linkage attacks");
+  const review = await reviewImport(new File(["id,title\nBOUND-1,Bound source"], "bound.csv", { type: "text/csv" }));
+  const applied = await applyImport(blank, review, evidenceDisposition());
+  const contradicted = structuredClone(applied);
+  const application = contradicted.evidenceApplications.at(-1);
+  application.reason = "workspace-backup-opened";
+  const unsignedApplication = structuredClone(application);
+  delete unsignedApplication.recordSha256;
+  application.recordSha256 = await canonicalEvidenceDigest(unsignedApplication);
+  contradicted.audit = [];
+  const coherentlyRehashed = await recordWorkspaceAction(contradicted, "Rehash contradictory application outcome");
+  await assert.rejects(validateWorkspaceSnapshot(coherentlyRehashed), /contradicts catalog-import/i);
+
+  await assert.rejects(
+    recordEvidenceDisposition(
+      blank,
+      {
+        source: { kind: "catalog-import", filename: "missing.csv", format: "catalog-csv-v1", bytes: 10, sha256: "a".repeat(64) },
+        review: { structuralStatus: "passed", canonicalPayloadSha256: "b".repeat(64), parserProfile: "catalog-csv-v1" },
+        scope: { kind: "catalog-records", entityIds: ["MISSING-1"] },
+      },
+      evidenceDisposition({ atBrowser: "2026-08-31T00:02:00.000Z" }),
+      "Attempt nonexistent evidence target",
+      {
+        outcome: "applied",
+        reason: "catalog-import-applied",
+        detail: "This target does not exist.",
+        resultingRevisionId: "REV-NOT-PRESENT",
+        resultingRevisionDigest: "c".repeat(64),
+      },
+    ),
+    /existing resulting revision.*exact state digest/i,
+  );
+});
+
+test("active evidence assessment does not latch removed history and blocks unattributed typed local records", async () => {
+  const blank = await createBlankWorkspace("Active evidence reachability");
+  const review = await reviewImport(new File(["id,title\nREMOVED-1,Temporary evidence"], "temporary.csv", { type: "text/csv" }));
+  const imported = await applyImport(blank, review, evidenceDisposition());
+  assert.equal(assessActiveEvidence(imported).activeUnverifiedDecisionDigests.length, 1);
+  const removed = await rollbackTo(imported, blank.activeRevisionId);
+  assert.equal(activeRevision(removed).records.length, 0);
+  assert.equal(assessActiveEvidence(removed).blocked, false);
+  assert.equal(removed.evidenceAuthority.length, 1, "historical decision remains reportable");
+
+  const service = makeServiceRecord("collection-policy", "SRV-UNATTRIBUTED", "2026-08-31T00:00:00.000Z");
+  Object.assign(service, {
+    title: "Official-looking but locally asserted policy",
+    ownerRole: "Director",
+    system: "Policy register",
+    state: "active",
+    values: { scope: "A structurally valid local assertion.", audience: ["All patrons"] },
+  });
+  const withService = await upsertServiceRecord(blank, service);
+  assert.deepEqual(assessActiveEvidence(withService).unattributedServiceIds, [service.id]);
+  assert.equal(assessActiveEvidence(withService).blocked, true);
+
+  const schema = makeArchiveSchema("blank", "Local asserted schema", "SCHEMA-UNATTRIBUTED", "2026-08-31T00:00:00.000Z");
+  const withArchive = await upsertArchiveSchema(blank, schema);
+  assert.deepEqual(assessActiveEvidence(withArchive).unattributedArchiveIds, [`schema:${schema.id}`]);
+  assert.equal(assessActiveEvidence(withArchive).blocked, true);
+});
+
+test("catalog quarantine rejects supplied unsafe primary IDs but permits absent IDs", async () => {
+  const unsafe = await reviewImport(new File([
+    "TY  - BOOK\nID  - SAME ID\nTI  - Supplied unsafe identity\nER  - \n",
+  ], "unsafe-id.ris", { type: "application/x-research-info-systems" }));
+  assert.equal(unsafe.blocked, true);
+  assert.match(unsafe.findings[0].detail, /unsafe primary identifier/i);
+
+  const absent = await reviewImport(new File([
+    "TY  - BOOK\nTI  - No supplied identity\nER  - \n",
+  ], "absent-id.ris", { type: "application/x-research-info-systems" }));
+  assert.equal(absent.blocked, false, absent.summary);
+  assert.match(absent.records[0].id, /^RIS-[a-f0-9]{12}-1$/);
+});
+
+test("duplicate DOI matching normalizes the common DOI label prefix", async () => {
+  const review = await reviewImport(new File([
+    "TY  - BOOK\nID  - DOI-ONE\nTI  - First DOI form\nDO  - 10.5555/same\nER  - \n"
+      + "TY  - BOOK\nID  - DOI-TWO\nTI  - Second DOI form\nDO  - doi: 10.5555/same\nER  - \n",
+  ], "duplicate-doi.ris", { type: "application/x-research-info-systems" }));
+
+  assert.equal(review.blocked, true);
+  assert.ok(review.findings.some((finding) => finding.code === "IDENTIFIER_DUPLICATE"));
 });
 
 test("maximum-length import filenames still produce a saveable revision label", async () => {
@@ -142,7 +305,7 @@ test("maximum-length import filenames still produce a saveable revision label", 
   };
   const filename = `${"a".repeat(175)}.json`;
   const review = await reviewImport(new File([JSON.stringify(packet)], filename, { type: "application/json" }));
-  const applied = await applyImport(await createBlankWorkspace(), review);
+  const applied = await applyImport(await createBlankWorkspace(), review, evidenceDisposition());
   assert.ok(activeRevision(applied).label.length <= 180);
   await assert.doesNotReject(validateWorkspaceSnapshot(applied));
 });
@@ -150,10 +313,49 @@ test("maximum-length import filenames still produce a saveable revision label", 
 test("archival apply binds the reviewed file digest, format, and filename", async () => {
   const blank = await createBlankWorkspace();
   const schema = makeArchiveSchema("blank", "Accession register", "SCHEMA-AUDIT", "2026-08-20T12:00:00.000Z");
-  const source = { filename: "accessions.archive-schema.json", format: "schema-package", digest: "a".repeat(64) };
-  const applied = await applyArchiveImport(blank, schema, [], source);
-  assert.equal(applied.audit.at(-1).target, `sha256:${source.digest} · ${source.format} · ${source.filename}`);
-  await assert.rejects(applyArchiveImport(blank, schema, [], { ...source, digest: "invalid" }), /provenance/i);
+  const packet = formatArchive(schema, [], "schema-package", "2026-08-20T12:00:00.000Z");
+  const review = await reviewArchiveImport(new File([packet], "accessions.archive-schema.json", { type: "application/json" }));
+  assert.equal(review.blocked, false, review.summary);
+  const applied = await applyArchiveImport(blank, review, evidenceDisposition());
+  assert.match(applied.audit.at(-1).target, new RegExp(`^evidence:[a-f0-9]{64} · source:${review.digest}$`));
+  assert.equal(applied.evidenceAuthority[0].disposition.decision, "admit-unverified");
+  assert.equal(applied.evidenceApplications[0].outcome, "applied");
+
+  const forged = structuredClone(review);
+  forged.schema.name = "Substituted archival schema";
+  await assert.rejects(applyArchiveImport(blank, forged, evidenceDisposition()), /review binding|provenance/i);
+});
+
+test("audit-ledger rollover refuses an unverified predecessor", async () => {
+  const workspace = await createBlankWorkspace("Unverified predecessor");
+  workspace.audit = Array.from({ length: MAX_AUDIT_EVENTS }, (_, index) => ({
+    sequence: index + 1,
+    at: "2026-08-20T12:00:00.000Z",
+    role: "Local operator",
+    action: "Fabricated event",
+    target: "Fabricated target",
+    outcome: "accepted",
+    stateDigest: "e".repeat(64),
+    previousHash: index === 0 ? "GENESIS" : "f".repeat(64),
+    hash: "f".repeat(64),
+  }));
+
+  await assert.rejects(prepareLocalWorkspace(workspace, "Successor"), /predecessor|audit chain|integrity/i);
+});
+
+test("saved snapshots require one forward linear retained revision lineage", async () => {
+  const first = await createBlankWorkspace("Lineage");
+  const second = await updateConfig(first, {
+    resolverBase: "",
+    proxyPrefix: "",
+    defaultPickupLocation: "Stacks",
+    memberCode: "LIN",
+  });
+  const reversed = structuredClone(second);
+  reversed.revisions[0].parentId = reversed.revisions[1].id;
+  reversed.revisions[1].parentId = null;
+
+  await assert.rejects(validateWorkspaceSnapshot(reversed), /revision lineage|parent/i);
 });
 
 test("prototype keys and future schemas are quarantined", async () => {
@@ -303,11 +505,47 @@ test("incident and note limits reject mutations before state becomes unsaveable"
   await assert.rejects(createIncidentFromFinding(workspace, { id: "F-LONG", severity: "warning", code: "LONG", label: "Long evidence", detail: "x".repeat(2001) }), /2,000-character incident boundary/i);
 });
 
+test("incident resolution requires contemporaneous closure evidence and an assigned owner", async () => {
+  const blank = await createBlankWorkspace("Incident closure evidence");
+  const opened = await createIncidentFromFinding(blank, {
+    id: "F-CLOSE",
+    severity: "error",
+    code: "SERVICE_UNAVAILABLE",
+    label: "Repository access unavailable",
+    detail: "The monitored access check did not complete.",
+  });
+  const incidentId = opened.incidents[0].id;
+
+  await assert.rejects(updateIncident(opened, incidentId, { state: "resolved" }), /resolution.*note/i);
+  await assert.rejects(updateIncident(opened, incidentId, { state: "resolved", note: "Access check completed successfully." }), /assigned owner role/i);
+  await assert.rejects(updateIncident(opened, incidentId, { state: "resolved", ownerRole: "Repository operations lead", nextAction: "", note: "Access check completed successfully." }), /closure criterion/i);
+
+  const resolved = await updateIncident(opened, incidentId, {
+    state: "resolved",
+    ownerRole: "Repository operations lead",
+    note: "Access check completed successfully from the approved monitoring path.",
+  });
+  assert.equal(resolved.incidents[0].state, "resolved");
+  assert.equal(resolved.incidents[0].ownerRole, "Repository operations lead");
+  assert.match(resolved.incidents[0].notes.at(-1), /approved monitoring path/i);
+  assert.equal(await verifyAudit(resolved), true);
+
+  await assert.rejects(updateIncident(resolved, incidentId, { nextAction: "No verification required" }), /resolved incident.*contemporaneous note|contemporaneous note.*resolved incident/i);
+  await assert.rejects(updateIncident(resolved, incidentId, { ownerRole: "Unassigned" }), /resolved incident.*contemporaneous note|contemporaneous note.*resolved incident/i);
+  const revisedClosure = await updateIncident(resolved, incidentId, {
+    nextAction: "Repeat the approved control-record and access-path checks after the next deployment.",
+    note: "Closure criterion updated after service-owner review; the original verification note remains retained.",
+  });
+  assert.match(revisedClosure.incidents[0].nextAction, /control-record and access-path checks/i);
+  assert.match(revisedClosure.incidents[0].notes.at(-1), /service-owner review/i);
+});
+
 test("operational documents carry revision and recovery context", async () => {
   const workspace = await createFixtureWorkspace();
   const inventory = makeOperationalDocument(workspace, "system-inventory");
   const runbook = makeOperationalDocument(workspace, "rollback-runbook");
   assert.match(inventory, /System inventory/);
+  assert.match(inventory, /Baseline control template.*do not establish.*deployed.*authoritative.*institution.*inventory/i);
   assert.match(inventory, /Revision:/);
   assert.match(runbook, /last known-good revision/i);
   assert.match(runbook, /Review trigger:/);
@@ -315,6 +553,71 @@ test("operational documents carry revision and recovery context", async () => {
   const escaped = makeOperationalDocument(hostile, "system-inventory");
   assert.doesNotMatch(escaped, /<img/i);
   assert.match(escaped, /&lt;img/);
+});
+
+test("operational documents do not relabel mutation time as verification evidence", async () => {
+  const workspace = await createFixtureWorkspace();
+  const inventory = makeOperationalDocument(workspace, "system-inventory");
+
+  assert.doesNotMatch(inventory, /Last verified:/i);
+  assert.match(inventory, /Workspace updated \(browser clock; not trusted time\):/i);
+  assert.match(inventory, /Draft status: requires institutional review/i);
+  assert.match(inventory, /content present in this workspace/i);
+});
+
+test("incident-bound documents require an explicit target and carry closure evidence", async () => {
+  let workspace = await createBlankWorkspace("Explicit incident reports");
+  workspace = await createIncidentFromFinding(workspace, { id: "F-A", severity: "error", code: "OUTAGE_A", label: "Repository A unavailable", detail: "Repository A check failed." });
+  const firstId = workspace.incidents[0].id;
+  workspace = await createIncidentFromFinding(workspace, { id: "F-B", severity: "warning", code: "OUTAGE_B", label: "Repository B degraded", detail: "Repository B check degraded." });
+  const secondId = workspace.incidents[1].id;
+  workspace = await updateIncident(workspace, secondId, { state: "resolved", ownerRole: "Repository operations lead", note: "Repository B passed the approved access and control-record checks." });
+
+  assert.throws(() => makeOperationalDocument(workspace, "incident-ticket"), /select an incident/i);
+  const ticket = makeOperationalDocument(workspace, "incident-ticket", secondId);
+  assert.equal(ticket.includes(secondId.replaceAll("-", "\\-")), true);
+  assert.match(ticket, /passed the approved access and control\\-record checks/i);
+  assert.equal(ticket.includes(firstId.replaceAll("-", "\\-")), false);
+  assert.doesNotMatch(ticket, /Repository A unavailable/);
+  const escalation = makeOperationalDocument(workspace, "vendor-escalation", secondId);
+  assert.doesNotMatch(escalation, /No patron data is included/);
+  assert.match(escalation, /review every supplied.*personal.*data/i);
+  const openPostmortem = makeOperationalDocument(workspace, "postmortem", firstId);
+  assert.match(openPostmortem, /State: open/i);
+  assert.match(openPostmortem, /incident remains open.*not closure evidence.*not.*completed postmortem/i);
+  assert.doesNotMatch(openPostmortem, /## Closure evidence and activity notes/);
+});
+
+test("incident-bound documents reject unsupported resolved incidents", async () => {
+  let workspace = await createBlankWorkspace("Legacy incident reports");
+  workspace = await createIncidentFromFinding(workspace, { id: "F-LEGACY", severity: "error", code: "OUTAGE_LEGACY", label: "Repository unavailable", detail: "Repository check failed." });
+  const incidentId = workspace.incidents[0].id;
+  workspace = await updateIncident(workspace, incidentId, {
+    state: "resolved",
+    ownerRole: "Repository operations lead",
+    note: "Repository passed the approved access and control-record checks.",
+  });
+
+  const withoutNoteDraft = structuredClone(workspace);
+  withoutNoteDraft.incidents[0].notes = [];
+  const withoutNote = await recordWorkspaceAction(withoutNoteDraft, "Import legacy incident state", incidentId);
+  await validateWorkspaceSnapshot(withoutNote);
+
+  const withoutOwnerDraft = structuredClone(workspace);
+  withoutOwnerDraft.incidents[0].ownerRole = "Unassigned";
+  const withoutOwner = await recordWorkspaceAction(withoutOwnerDraft, "Import legacy incident state", incidentId);
+  await validateWorkspaceSnapshot(withoutOwner);
+
+  const withoutCriterionDraft = structuredClone(workspace);
+  withoutCriterionDraft.incidents[0].nextAction = "";
+  const withoutCriterion = await recordWorkspaceAction(withoutCriterionDraft, "Import legacy incident state", incidentId);
+  await validateWorkspaceSnapshot(withoutCriterion);
+
+  for (const kind of ["incident-ticket", "vendor-escalation", "postmortem"]) {
+    assert.throws(() => makeOperationalDocument(withoutNote, kind, incidentId), /closure evidence/i);
+    assert.throws(() => makeOperationalDocument(withoutOwner, kind, incidentId), /assigned owner/i);
+    assert.throws(() => makeOperationalDocument(withoutCriterion, kind, incidentId), /closure criterion/i);
+  }
 });
 
 test("MARCXML and Dublin Core XML normalize into canonical records", async () => {
@@ -609,6 +912,12 @@ test("production exchange formats serialize every supported record type", async 
   assert.match(formatRecords(records, "marc-text"), /=720 {2}\\\\\$a[^\n]+\$ecreator/);
 });
 
+test("catalog formatters reject empty batches instead of emitting files their imports refuse", () => {
+  for (const format of EXCHANGE_FORMATS) {
+    assert.throws(() => formatRecords([], format.value), /requires 1–1,000 records; no file was generated/i);
+  }
+});
+
 test("every exchange format preserves all 20 normalized record types on re-import", async () => {
   const workspace = await createFixtureWorkspace();
   const template = structuredClone(activeRevision(workspace).records[0]);
@@ -762,6 +1071,28 @@ test("versioned CSV and TSV preserve list delimiters, formula-leading text, and 
   }
 });
 
+test("versioned CSV and TSV quarantine contradictory or non-scalar JSON identities inside cells", async () => {
+  const workspace = await createFixtureWorkspace();
+  const record = activeRevision(workspace).records[0];
+  for (const [format, filename, mime] of [
+    ["csv", "identity-conflict.csv", "text/csv"],
+    ["tsv", "identity-conflict.tsv", "text/tab-separated-values"],
+  ]) {
+    const output = formatRecords([record], format);
+    const duplicate = output.replace(/""value"":""([^"\r\n]+)""/, '""value"":""forged"",""value"":""$1""');
+    assert.notEqual(duplicate, output, `${format} duplicate-key fixture was injected`);
+    const duplicateReview = await reviewImport(new File([duplicate], filename, { type: mime }));
+    assert.equal(duplicateReview.blocked, true);
+    assert.match(duplicateReview.findings[0].detail, /duplicate member name "value"/i);
+
+    const surrogate = output.replace(/""value"":""([^"\r\n]+)""/, '""value"":""\\uD800""');
+    assert.notEqual(surrogate, output, `${format} surrogate fixture was injected`);
+    const surrogateReview = await reviewImport(new File([surrogate], filename, { type: mime }));
+    assert.equal(surrogateReview.blocked, true);
+    assert.match(surrogateReview.findings[0].detail, /unpaired Unicode surrogate|unsupported \\u escape/i);
+  }
+});
+
 test("CSL-JSON round-trips display names without inventing personal-name structure", async () => {
   const workspace = await createFixtureWorkspace();
   const record = structuredClone(activeRevision(workspace).records[0]);
@@ -865,7 +1196,7 @@ test("serializers escape markup, formulas, and tagged-line injection", async () 
 test("common library exchange imports normalize through quarantine", async () => {
   const files = [
     new File([JSON.stringify([{ id: "CSL-1", type: "article-journal", title: "CSL title", author: [{ family: "Lee", given: "Rowan" }], issued: { "date-parts": [[2026, 8, 20]] }, DOI: "10.5555/csl.1", URL: "https://example.org/csl" }])], "items.csl.json", { type: "application/json" }),
-    new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Dataset", "@id": "DATA-1", name: "Linked data title", author: { "@type": "Person", name: "Mina Rao" }, datePublished: "2026-08-20", url: "https://example.org/data" })], "item.jsonld", { type: "application/ld+json" }),
+    new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Dataset", "@id": "urn:in-keeping:DATA-1", name: "Linked data title", author: { "@type": "Person", name: "Mina Rao" }, datePublished: "2026-08-20", url: "https://example.org/data" })], "item.jsonld", { type: "application/ld+json" }),
     new File(["TY  - JOUR\nID  - RIS-1\nTI  - RIS title\nAU  - Ortiz, Lina\nPY  - 2026\nDO  - 10.5555/ris.1\nER  - \n"], "item.ris", { type: "application/x-research-info-systems" }),
     new File(["@book{BIBTEX-1,\n title = {BibTeX title},\n author = {Bell, A. K.},\n year = {2026},\n isbn = {9780306406157}\n}\n"], "item.bib", { type: "application/x-bibtex" }),
     new File(["id,title,creators,format,links,subjects\nCSV-1,CSV title,Rowan Lee,Dataset,https://example.org/csv,continuity;metadata\n"], "item.csv", { type: "text/csv" }),
@@ -922,6 +1253,289 @@ test("CSL and JSON-LD arrays are supported or explicitly rejected, never reduced
   const tooMany = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Dataset", name: "URL overflow", url: [...urls, "https://example.org/resource/21"] })], "url-overflow.jsonld", { type: "application/ld+json" }));
   assert.equal(tooMany.blocked, true);
   assert.match(tooMany.findings[0].detail, /exceeds 20 links/i);
+});
+
+test("JSON quarantine preserves identity evidence and rejects deceptive JSON-LD semantics", async () => {
+  for (const [source, name, expected] of [
+    ['{"id":"first","\\u0069d":"second","title":"Lost identity"}', "duplicate.csl.json", /duplicate member name/i],
+    ['{"id":"\\uD800","title":"Invalid scalar"}', "surrogate.csl.json", /unpaired Unicode surrogate/i],
+    [JSON.stringify({ "@context": { "@vocab": "https://schema.org/" }, "@type": "Book", name: "Aliased" }), "object-context.jsonld", /supported.*schema\.org.*context/i],
+    [JSON.stringify({ "@context": "https://attacker.invalid/context", "@type": "Book", name: "Remote" }), "remote-context.jsonld", /supported.*schema\.org.*context/i],
+    [JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "Nested", author: { "@context": "https://attacker.invalid/context", name: "Forged" } }), "nested-context.jsonld", /nested.*context/i],
+  ]) {
+    const review = await reviewImport(new File([source], name, { type: name.endsWith("jsonld") ? "application/ld+json" : "application/json" }));
+    assert.equal(review.blocked, true, `${name}: ${review.summary}`);
+    assert.match(review.findings[0].detail, expected, name);
+  }
+
+  const cslWithType = await reviewImport(new File([JSON.stringify({ id: "CSL-TYPE-1", "@type": "article-journal", title: "CSL remains CSL" })], "typed.csl.json", { type: "application/json" }));
+  assert.equal(cslWithType.blocked, false, cslWithType.summary);
+  assert.equal(cslWithType.format, "csl-json");
+  assert.equal(cslWithType.records[0].id, "CSL-TYPE-1");
+
+  const numericCslId = await reviewImport(new File([JSON.stringify({ id: 123, title: "Numeric CSL identity" })], "numeric.csl.json", { type: "application/json" }));
+  assert.equal(numericCslId.blocked, false, numericCslId.summary);
+  assert.equal(numericCslId.records[0].id, "123");
+  for (const item of [
+    { id: ["A", "B"], title: "Array" },
+    { Id: "ALIAS", title: "Case alias" },
+    { "ｉｄ": "ALIAS", title: "NFKC ID alias" },
+    { id: "SAFE", "ＤＯＩ": "10.1/fullwidth", title: "NFKC DOI alias" },
+    { id: "SAFE", DOI: ["10.1/a"], title: "Wrong DOI" },
+    { id: "SAFE", DOI: "10.1/a\u200b", title: "Format-controlled DOI" },
+    { id: "SAFE", URL: "https://example.org/a\u2060b", title: "Format-controlled URL" },
+    { id: "SAFE", "@id": "urn:in-keeping:CSL-SHADOW", title: "Cross-dialect @id" },
+    { id: "SAFE", identifier: "CSL-SHADOW", title: "Cross-dialect identifier" },
+    { id: "SAFE", author: [{ literal: "Name", "@ID": "urn:in-keeping:NESTED" }], title: "Nested JSON-LD identity alias" },
+    { id: "SAFE", note: { "@i\u2066d": "urn:in-keeping:BIDI" }, title: "Bidi identity alias" },
+    { id: "SAFE", "D\u200bOI": "10.1/deceptive", title: "Format-controlled CSL identity key" },
+  ]) {
+    const review = await reviewImport(new File([JSON.stringify(item)], "wrong.csl.json", { type: "application/json" }));
+    assert.equal(review.blocked, true, review.summary);
+  }
+
+  const publicId = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org/", "@id": "https://example.org/item/1", "@type": "Book", name: "Public linked identity", identifier: ["LOCAL-A", "LOCAL-B"] })], "public.jsonld", { type: "application/ld+json" }));
+  assert.equal(publicId.blocked, false, publicId.summary);
+  assert.match(publicId.records[0].id, /^JSONLD-[a-f0-9]{12}-1$/);
+  assert.ok(publicId.records[0].links.includes("https://example.org/item/1"));
+  assert.deepEqual(publicId.records[0].identifiers.map((item) => item.value), ["LOCAL-A", "LOCAL-B"]);
+
+  const privateId = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@id": "URN:IN-KEEPING:JSONLD-PRIVATE", "@type": "Book", name: "Private identity" })], "private.jsonld", { type: "application/ld+json" }));
+  assert.equal(privateId.blocked, false, privateId.summary);
+  assert.equal(privateId.records[0].id, "JSONLD-PRIVATE");
+
+  for (const key of ["＠id", "@ｉｄ", "@ID", "@i\u2066d", "@i\u200ed", "@\u200bid", "Identifier", "ＵＲＬ", "@Context", "＠graph"]) {
+    const review = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "Identity alias", [key]: "urn:in-keeping:FORGED" })], "identity-alias.jsonld", { type: "application/ld+json" }));
+    assert.equal(review.blocked, true, `${key}: ${review.summary}`);
+    assert.match(review.findings[0].detail, /deceptive identity or declaration key|bidirectional controls/i, key);
+  }
+  const duplicateAlias = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@id": "urn:in-keeping:REAL", "@ID": "urn:in-keeping:FORGED", name: "Parallel alias" })], "parallel-alias.jsonld", { type: "application/ld+json" }));
+  assert.equal(duplicateAlias.blocked, true);
+  assert.match(duplicateAlias.findings[0].detail, /deceptive identity or declaration key/i);
+
+  for (const key of ["@Context", "＠ｇｒａｐｈ", "@ID", "Identifier", "ＵＲＬ", "@i\u2066d", "@i\u200ed", "@\u200bid"]) {
+    const nested = { "@context": "https://schema.org", "@type": "Book", name: "Nested identity alias", author: [{ name: "Visible author", [key]: "forged" }] };
+    const review = await reviewImport(new File([JSON.stringify(nested)], "nested-alias.jsonld", { type: "application/ld+json" }));
+    assert.equal(review.blocked, true, `${key}: ${review.summary}`);
+    assert.match(review.findings[0].detail, /deceptive identity or declaration key|bidirectional controls/i, key);
+  }
+
+  const graph = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@graph": [
+    { "@id": "urn:in-keeping:GRAPH-ONE", "@type": "Book", name: "Graph one" },
+    { "@id": "urn:in-keeping:GRAPH-TWO", "@type": "Book", name: "Graph two" },
+  ] })], "graph.jsonld", { type: "application/ld+json" }));
+  assert.equal(graph.blocked, false, graph.summary);
+  assert.deepEqual(graph.records.map((record) => record.id), ["GRAPH-ONE", "GRAPH-TWO"]);
+
+  for (const source of [
+    { "@context": "https://schema.org", "@graph": { "@type": "Book", name: "Wrong graph type" } },
+    { "@context": "https://schema.org", "@graph": [{ "@context": "https://schema.org", "@type": "Book", name: "Redundant override" }] },
+    { "@context": "https://schema.org", "@graph": [{ "@context": "https://attacker.invalid/context", "@type": "Book", name: "Hostile override" }] },
+    { "@context": "https://schema.org", "@id": "urn:in-keeping:IGNORED-ROOT", "@graph": [{ "@type": "Book", name: "Root identity override" }] },
+    { "@context": "https://schema.org", identifier: "IGNORED-ROOT", "@graph": [{ "@type": "Book", name: "Root identifier override" }] },
+    { "@context": "https://schema.org", "@type": "Book", name: "Nested graph", author: { "@graph": [] } },
+    { "@context": "https://schema.org", "@graph": [{ "@type": "Book", name: "Graph item", "@graph": [] }] },
+  ]) {
+    const review = await reviewImport(new File([JSON.stringify(source)], "graph-conflict.jsonld", { type: "application/ld+json" }));
+    assert.equal(review.blocked, true, review.summary);
+    assert.match(review.findings[0].detail, /@graph must be an array|may not override the root context|nested JSON-LD @graph|Unknown field/i);
+  }
+
+  const supportedIdentityObjects = await reviewImport(new File([JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Book",
+    name: "Supported identity objects",
+    identifier: [{ "@type": "PropertyValue", value: "10.5555/supported", propertyID: "doi" }, { "@value": "9780306406157", type: "isbn" }],
+    url: { "@id": "https://example.org/supported" },
+  })], "supported-identities.jsonld", { type: "application/ld+json" }));
+  assert.equal(supportedIdentityObjects.blocked, false, supportedIdentityObjects.summary);
+  assert.deepEqual(supportedIdentityObjects.records[0].identifiers.map((item) => item.scheme), ["doi", "isbn"]);
+  assert.deepEqual(supportedIdentityObjects.records[0].links, ["https://example.org/supported"]);
+
+  for (const identifier of [
+    { value: "A", "@value": "B", propertyID: "local" },
+    { value: "A", propertyID: "doi", type: "isbn" },
+    { value: ["A", "B"], propertyID: "local" },
+    { value: "A", propertyID: "" },
+    { value: "A", type: "" },
+    { value: "A", PropertyID: "doi" },
+    { "@Value": "A", propertyID: "local" },
+    { "@Type": "PropertyValue", value: "A", propertyID: "local" },
+    { "@type": "Other", value: "A", propertyID: "local" },
+    { value: "A", "property\u2066ID": "doi" },
+    { value: "A", propertyID: "local", ignored: "forged" },
+    { value: "A\u200b", propertyID: "local" },
+    { value: "A", propertyID: "do\u2060i" },
+    "urn:in-keeping:SHADOW-ID",
+  ]) {
+    const review = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "Identifier conflict", identifier })], "identifier-conflict.jsonld", { type: "application/ld+json" }));
+    assert.equal(review.blocked, true, review.summary);
+  }
+  for (const url of [{ "@ID": "https://example.org/alias" }, { "@id": "https://example.org/extra", ignored: true }]) {
+    const review = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "URL identity conflict", url })], "url-conflict.jsonld", { type: "application/ld+json" }));
+    assert.equal(review.blocked, true, review.summary);
+  }
+  for (const control of ["\u200b", "\u2060", "\u200e"]) {
+    for (const url of [`https://example.org/a${control}b`, { "@id": `https://example.org/a${control}b` }]) {
+      const review = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "Format-controlled URL", url })], "format-url.jsonld", { type: "application/ld+json" }));
+      assert.equal(review.blocked, true, review.summary);
+      assert.match(review.findings[0].detail, /Unicode format|bidirectional control/i);
+    }
+  }
+
+  const unicodeIdentifier = await reviewImport(new File([JSON.stringify({ "@context": "https://schema.org", "@type": "Book", name: "Visible Unicode identity", identifier: { value: "資料-α", propertyID: "local" } })], "unicode-identity.jsonld", { type: "application/ld+json" }));
+  assert.equal(unicodeIdentifier.blocked, false, unicodeIdentifier.summary);
+  assert.equal(unicodeIdentifier.records[0].identifiers[0].value, "資料-α");
+});
+
+test("singular catalog identities fail closed while standards-repeatable identifiers remain accepted", async () => {
+  const duplicateRis = await reviewImport(new File(["TY  - BOOK\nID  - RIS-A\nID  - RIS-B\nTI  - Conflict\nER  - \n"], "duplicate-id.ris", { type: "application/x-research-info-systems" }));
+  assert.equal(duplicateRis.blocked, true);
+  assert.match(duplicateRis.findings[0].detail, /duplicate singular ID/i);
+  const repeatableRis = await reviewImport(new File(["TY  - BOOK\nID  - RIS-OK\nTI  - Repeats\nDO  - 10.5555/one\nDO  - 10.5555/two\nSN  - 1234-5678\nSN  - 9780306406157\nER  - \n"], "repeatable.ris", { type: "application/x-research-info-systems" }));
+  assert.equal(repeatableRis.blocked, false, repeatableRis.summary);
+  assert.equal(repeatableRis.records[0].identifiers.length, 4);
+  for (const tag of ["DO", "SN"]) {
+    for (const empty of ["", "   "]) {
+      const review = await reviewImport(new File([`TY  - BOOK\nID  - RIS-EMPTY\nTI  - Empty identifier\n${tag}  - ${empty}\nER  - \n`], `empty-${tag}.ris`, { type: "application/x-research-info-systems" }));
+      assert.equal(review.blocked, true, `${tag}/${JSON.stringify(empty)}: ${review.summary}`);
+      assert.match(review.findings[0].detail, new RegExp(`${tag} values must be nonempty`, "i"));
+    }
+  }
+  for (const tag of ["ID", "DO", "SN"]) {
+    for (const control of ["\u200b", "\u2060", "\u200e"]) {
+      const review = await reviewImport(new File([`TY  - BOOK\n${tag === "ID" ? "" : "ID  - RIS-FORMAT\n"}TI  - Format control\n${tag}  - ${control}\nER  - \n`], `format-${tag}.ris`, { type: "application/x-research-info-systems" }));
+      assert.equal(review.blocked, true, `${tag}/${control.codePointAt(0).toString(16)}: ${review.summary}`);
+      assert.match(review.findings[0].detail, /Unicode format|bidirectional control/i);
+    }
+  }
+
+  const leader = "00000nam a2200000 i 4500";
+  const duplicateMnemonic = await reviewImport(new File([`=LDR  ${leader}\n=001  MARC-A\n=001  MARC-B\n=245  10$aConflict\n`], "duplicate.mrk", { type: "text/plain" }));
+  assert.equal(duplicateMnemonic.blocked, true);
+  assert.match(duplicateMnemonic.findings[0].detail, /duplicate singular 001/i);
+  const duplicateMnemonicAgency = await reviewImport(new File([`=LDR  ${leader}\n=001  MARC-AGENCY\n=003  ORG-A\n=003  ORG-B\n=245  10$aConflict\n`], "duplicate-agency.mrk", { type: "text/plain" }));
+  assert.equal(duplicateMnemonicAgency.blocked, true);
+  assert.match(duplicateMnemonicAgency.findings[0].detail, /duplicate singular 003/i);
+  for (const tag of ["001", "003"]) {
+    for (const empty of ["   ", "\t", "\u00a0"]) {
+      const identity = tag === "001" ? `=001  ${empty}` : `=001  MARC-EMPTY\n=003  ${empty}`;
+      const review = await reviewImport(new File([`=LDR  ${leader}\n${identity}\n=245  10$aWhitespace identity\n`], `empty-${tag}.mrk`, { type: "text/plain" }));
+      assert.equal(review.blocked, true, `${tag}/${JSON.stringify(empty)}: ${review.summary}`);
+      assert.match(review.findings[0].detail, new RegExp(`${tag} must be nonempty`, "i"));
+    }
+  }
+  for (const tag of ["001", "003"]) {
+    for (const control of ["\u200b", "\u2060", "\u200e"]) {
+      const identity = tag === "001" ? `=001  ${control}` : `=001  MARC-FORMAT\n=003  ${control}`;
+      const review = await reviewImport(new File([`=LDR  ${leader}\n${identity}\n=245  10$aFormat-control identity\n`], `format-${tag}.mrk`, { type: "text/plain" }));
+      assert.equal(review.blocked, true, `${tag}/${control.codePointAt(0).toString(16)}: ${review.summary}`);
+      assert.match(review.findings[0].detail, /Unicode format|bidirectional control/i);
+    }
+  }
+  const repeatedMnemonicFields = await reviewImport(new File([`=LDR  ${leader}\n=001  MARC-OK\n=003  ORG-A\n=245  10$aRepeatable fields\n=020  ##$a9780306406157\n=020  ##$a9781861972712\n=022  ##$a1234-5678\n=022  ##$a8765-4321\n=024  7#$a10.5555/one$2doi\n=024  7#$a10.5555/two$2doi\n`], "repeatable.mrk", { type: "text/plain" }));
+  assert.equal(repeatedMnemonicFields.blocked, false, repeatedMnemonicFields.summary);
+  assert.equal(repeatedMnemonicFields.records[0].identifiers.length, 6);
+  for (const field of [
+    "=020  ##$a9780306406157$a9781861972712",
+    "=022  ##$a1234-5678$a8765-4321",
+    "=024  7#$a10.5555/a$a10.5555/b$2doi",
+    "=024  7#$a10.5555/a$2doi$2isbn",
+    "=020  ##$A9780306406157",
+    "=020  ##$a\u200b",
+    "=022  ##$a",
+    "=024  7#$a10.5555/a$2do\u2060i",
+  ]) {
+    const review = await reviewImport(new File([`=LDR  ${leader}\n=001  MARC-BAD\n=245  10$aConflict\n${field}\n`], "bad-identity.mrk", { type: "text/plain" }));
+    assert.equal(review.blocked, true, `${field}: ${review.summary}`);
+  }
+
+  const marcXml = (body) => `<record xmlns="http://www.loc.gov/MARC21/slim"><leader>${leader}</leader>${body}<datafield tag="245" ind1="1" ind2="0"><subfield code="a">Identity</subfield></datafield></record>`;
+  const duplicateMarcXml = await reviewImport(new File([marcXml('<controlfield tag="001">XML-A</controlfield><controlfield tag="001">XML-B</controlfield>')], "duplicate.marcxml", { type: "application/xml" }));
+  assert.equal(duplicateMarcXml.blocked, true);
+  assert.match(duplicateMarcXml.findings[0].detail, /duplicate singular 001/i);
+  const duplicateMarcXmlAgency = await reviewImport(new File([marcXml('<controlfield tag="001">XML-AGENCY</controlfield><controlfield tag="003">ORG-A</controlfield><controlfield tag="003">ORG-B</controlfield>')], "duplicate-agency.marcxml", { type: "application/xml" }));
+  assert.equal(duplicateMarcXmlAgency.blocked, true);
+  assert.match(duplicateMarcXmlAgency.findings[0].detail, /duplicate singular 003/i);
+  for (const tag of ["001", "003"]) {
+    for (const control of ["\u200b", "\u2060", "\u200e"]) {
+      const body = tag === "001"
+        ? `<controlfield tag="001">${control}</controlfield>`
+        : `<controlfield tag="001">XML-FORMAT</controlfield><controlfield tag="003">${control}</controlfield>`;
+      const review = await reviewImport(new File([marcXml(body)], `format-${tag}.marcxml`, { type: "application/xml" }));
+      assert.equal(review.blocked, true, `${tag}/${control.codePointAt(0).toString(16)}: ${review.summary}`);
+      assert.match(review.findings[0].detail, /Unicode format|bidirectional control/i);
+    }
+  }
+  const repeatableMarcXml = await reviewImport(new File([marcXml('<controlfield tag="001">XML-OK</controlfield><controlfield tag="003">ORG-A</controlfield><datafield tag="020" ind1=" " ind2=" "><subfield code="a">9780306406157</subfield></datafield><datafield tag="020" ind1=" " ind2=" "><subfield code="a">9781861972712</subfield></datafield><datafield tag="022" ind1=" " ind2=" "><subfield code="a">1234-5678</subfield></datafield><datafield tag="022" ind1=" " ind2=" "><subfield code="a">8765-4321</subfield></datafield><datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/one</subfield><subfield code="2">doi</subfield></datafield><datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/two</subfield><subfield code="2">doi</subfield></datafield>')], "repeatable.marcxml", { type: "application/xml" }));
+  assert.equal(repeatableMarcXml.blocked, false, repeatableMarcXml.summary);
+  assert.equal(repeatableMarcXml.records[0].identifiers.length, 6);
+  for (const field of [
+    '<datafield tag="020" ind1=" " ind2=" "><subfield code="a">9780306406157</subfield><subfield code="a">9781861972712</subfield></datafield>',
+    '<datafield tag="022" ind1=" " ind2=" "><subfield code="a">1234-5678</subfield><subfield code="a">8765-4321</subfield></datafield>',
+    '<datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/a</subfield><subfield code="a">10.5555/b</subfield><subfield code="2">doi</subfield></datafield>',
+    '<datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/a</subfield><subfield code="2">doi</subfield><subfield code="2">isbn</subfield></datafield>',
+    '<datafield tag="020" ind1=" " ind2=" "><subfield code="A">9780306406157</subfield></datafield>',
+    '<datafield tag="020" ind1=" " ind2=" "><subfield code="a">\u200b</subfield></datafield>',
+    '<datafield tag="022" ind1=" " ind2=" "><subfield code="a"></subfield></datafield>',
+    '<datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/a</subfield><subfield code="2">do\u2060i</subfield></datafield>',
+  ]) {
+    const review = await reviewImport(new File([marcXml(`<controlfield tag="001">XML-BAD</controlfield>${field}`)], "bad-identity.marcxml", { type: "application/xml" }));
+    assert.equal(review.blocked, true, `${field}: ${review.summary}`);
+  }
+});
+
+test("MODS and Dublin Core private identity rules retain legitimate repeatable evidence", async () => {
+  const mods = (body) => `<mods xmlns="http://www.loc.gov/mods/v3">${body}<titleInfo><title>Identity review</title></titleInfo></mods>`;
+  for (const body of [
+    "<recordInfo><recordIdentifier>MODS-A</recordIdentifier><recordIdentifier>MODS-B</recordIdentifier></recordInfo>",
+    "<recordInfo><recordIdentifier>MODS-A</recordIdentifier></recordInfo><recordInfo><recordIdentifier>MODS-B</recordIdentifier></recordInfo>",
+    "<recordInfo><recordIdentifier/></recordInfo>",
+    "<recordInfo><recordIdentifier>   </recordIdentifier></recordInfo>",
+    "<recordInfo><recordIdentifier>\u200b</recordIdentifier></recordInfo>",
+    "<recordInfo><recordIdentifier>MODS\u2060HIDDEN</recordIdentifier></recordInfo>",
+  ]) {
+    const review = await reviewImport(new File([mods(body)], "conflict.mods.xml", { type: "application/xml" }));
+    assert.equal(review.blocked, true, review.summary);
+    assert.match(review.findings[0].detail, /contradictory recordIdentifier|duplicate singular recordInfo|recordIdentifier must be nonempty|Unicode format|bidirectional control/i);
+  }
+  const exactMods = await reviewImport(new File([mods("<recordInfo><recordIdentifier>MODS-SAME</recordIdentifier><recordIdentifier>MODS-SAME</recordIdentifier></recordInfo>")], "exact.mods.xml", { type: "application/xml" }));
+  assert.equal(exactMods.blocked, false, exactMods.summary);
+  assert.equal(exactMods.records[0].id, "MODS-SAME");
+  assert.equal(exactMods.records[0].source.elements.filter((item) => item.code === "mods:recordInfo/recordIdentifier").length, 2);
+  const genericMods = await reviewImport(new File([mods('<identifier type="doi">10.5555/one</identifier><identifier type="isbn">9780306406157</identifier><identifier type="isbn">9781861972712</identifier><identifier type="local">LOCAL-TWO</identifier>')], "generic.mods.xml", { type: "application/xml" }));
+  assert.equal(genericMods.blocked, false, genericMods.summary);
+  assert.match(genericMods.records[0].id, /^MODSXML-[a-f0-9]{12}-1$/);
+  assert.deepEqual(genericMods.records[0].identifiers.map((item) => item.value), ["10.5555/one", "9780306406157", "9781861972712", "LOCAL-TWO"]);
+  for (const identifier of ["\u200b", "LOCAL\u200eHIDDEN"]) {
+    const review = await reviewImport(new File([mods(`<identifier type="local">${identifier}</identifier>`)], "format-identifier.mods.xml", { type: "application/xml" }));
+    assert.equal(review.blocked, true, review.summary);
+    assert.match(review.findings[0].detail, /Unicode format|bidirectional control/i);
+  }
+
+  const dc = (identifiers) => `<oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Identity review</dc:title>${identifiers.map((value) => `<dc:identifier>${value}</dc:identifier>`).join("")}</oai_dc:dc>`;
+  const duplicateDc = await reviewImport(new File([dc(["urn:in-keeping:DC-A", "URN:IN-KEEPING:DC-B"])], "duplicate.dc.xml", { type: "application/xml" }));
+  assert.equal(duplicateDc.blocked, true);
+  assert.match(duplicateDc.findings[0].detail, /duplicate private/i);
+  const upperDc = await reviewImport(new File([dc(["URN:IN-KEEPING:DC-UPPER", "doi:10.5555/dc", "https://example.org/dc"])], "upper.dc.xml", { type: "application/xml" }));
+  assert.equal(upperDc.blocked, false, upperDc.summary);
+  assert.equal(upperDc.records[0].id, "DC-UPPER");
+  assert.deepEqual(upperDc.records[0].identifiers, [{ scheme: "doi", value: "10.5555/dc" }]);
+  const genericDc = await reviewImport(new File([dc(["LOCAL-ONE", "LOCAL-TWO"])], "generic.dc.xml", { type: "application/xml" }));
+  assert.equal(genericDc.blocked, false, genericDc.summary);
+  assert.match(genericDc.records[0].id, /^DCXML-[a-f0-9]{12}-1$/);
+  assert.deepEqual(genericDc.records[0].identifiers.map((item) => item.value), ["LOCAL-ONE", "LOCAL-TWO"]);
+  const lookalikeDc = await reviewImport(new File([dc(["ｕｒｎ：ｉｎ－ｋｅｅｐｉｎｇ：DC-LOOKALIKE"])], "lookalike.dc.xml", { type: "application/xml" }));
+  assert.equal(lookalikeDc.blocked, true);
+  assert.match(lookalikeDc.findings[0].detail, /Unicode lookalike/i);
+  for (const identifier of ["", "   ", "\u200b", "LOCAL\u2060HIDDEN", "urn:in-keeping:DC\u200eHIDDEN"]) {
+    const review = await reviewImport(new File([dc([identifier])], "format-control.dc.xml", { type: "application/xml" }));
+    assert.equal(review.blocked, true, `${JSON.stringify(identifier)}: ${review.summary}`);
+    assert.match(review.findings[0].detail, /must be nonempty|Unicode format|bidirectional control/i);
+  }
+  const unicodeDc = await reviewImport(new File([dc(["資料-α"])], "unicode.dc.xml", { type: "application/xml" }));
+  assert.equal(unicodeDc.blocked, false, unicodeDc.summary);
+  assert.equal(unicodeDc.records[0].identifiers[0].value, "資料-α");
 });
 
 test("RIS rejects malformed, unterminated, duplicate-type, and nonterminal end lines", async () => {
@@ -1053,6 +1667,15 @@ test("bounded BibTeX parsing supports nesting and rejects executable grammar", a
     const review = await reviewImport(new File([source], "hostile.bib", { type: "application/x-bibtex" }));
     assert.equal(review.blocked, true, review.summary);
     assert.match(review.findings[0].detail, pattern);
+  }
+});
+
+test("BibTeX comments recognize CR, LF, and CRLF without hiding later records", async () => {
+  for (const lineEnding of ["\n", "\r", "\r\n"]) {
+    const source = `% leading comment${lineEnding}@book{BIB-FIRST,title={First}}${lineEnding}% between records${lineEnding}@book{BIB-SECOND,title={Second}}${lineEnding}% terminal comment`;
+    const review = await reviewImport(new File([source], "comments.bib", { type: "application/x-bibtex" }));
+    assert.equal(review.blocked, false, `${JSON.stringify(lineEnding)}: ${review.summary}`);
+    assert.deepEqual(review.records.map((record) => record.id), ["BIB-FIRST", "BIB-SECOND"]);
   }
 });
 

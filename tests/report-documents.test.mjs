@@ -4,6 +4,12 @@ import test from "node:test";
 import {
   createBlankWorkspace,
   createFixtureWorkspace,
+  activeRevision,
+  recordEvidenceDisposition,
+  recordWorkspaceAction,
+  removeServiceRecord,
+  updateConfig,
+  upsertServiceRecord,
 } from "../app/lab-core.ts";
 import {
   makePublicNoticeHtml,
@@ -18,9 +24,12 @@ import { makeArchiveSchema } from "../app/archival-schemas.ts";
 const GENERATED_AT = "2026-08-20T21:45:00.000Z";
 
 async function createPublishableWorkspace() {
-  const workspace = await createFixtureWorkspace();
+  let workspace = await createFixtureWorkspace();
+  for (const record of [...(activeRevision(workspace).serviceRecords ?? [])]) {
+    workspace = await removeServiceRecord(workspace, record.id);
+  }
   workspace.incidents.forEach((incident) => { incident.synthetic = false; });
-  return workspace;
+  return recordWorkspaceAction(workspace, "Prepare publishable report fixture");
 }
 
 test("report artifacts use stable HTML file contracts", () => {
@@ -42,25 +51,26 @@ test("embedded report fonts exactly match the licensed site assets", async () =>
   }
 });
 
-test("technical report is a complete static post-run notebook document", async () => {
+test("technical report is a bounded active-state post-run notebook document", async () => {
   const workspace = await createFixtureWorkspace();
-  const report = makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
+  const report = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
 
   assert.ok(report.startsWith("<!doctype html>"));
   assert.ok(report.endsWith("</html>"));
   assert.match(report, /<html lang="en">/);
   assert.match(report, /<title>[^<]+Technical report<\/title>/);
   assert.match(report, /data-document-format="post-jupyter-html"/);
-  assert.equal((report.match(/class="jp-Cell"/g) ?? []).length, 14);
+  assert.equal((report.match(/class="jp-Cell"/g) ?? []).length, 15);
   assert.match(report, /Document control/);
   assert.match(report, /Software execution boundary/);
   assert.match(report, /Inventory and interoperability/);
   assert.match(report, /Complete finding register/);
+  assert.match(report, /Evidence disposition register/);
   assert.match(report, /Incident register/);
   assert.match(report, /Archive schema register/);
   assert.match(report, /Catalog records — original input and new output/);
-  assert.match(report, /Archive records — original input and new output/);
-  assert.match(report, /Service register — original input and new output/);
+  assert.match(report, /Archive records — entered active values and canonical active records/);
+  assert.match(report, /Service register — entered active values and canonical active records/);
   assert.match(report, /Data and record-type formatting/);
   assert.match(report, /Configuration register/);
   assert.match(report, /Recovery and audit/);
@@ -69,22 +79,25 @@ test("technical report is a complete static post-run notebook document", async (
   assert.match(report, /Audit chain<\/dt><dd>Internally consistent/);
   assert.match(report, /Original source elements and accessible definitions/);
   assert.match(report, /Canonical catalog record as JSON/);
+  assert.match(report, /Entered active service values as JSON/);
   assert.match(report, /Canonical service record as JSON/);
+  assert.match(report, /Historical revision payloads remain in the plaintext workspace backup/);
   assert.match(report, /Service-register field-type formatting rules/);
   assert.match(report, /Safeguard and residual-risk register/);
   assert.match(report, /Workspace data boundary/);
   assert.match(report, /Current-state binding/);
   assert.match(report, /Linked-event verification/);
   assert.match(report, /there are no telemetry, analytics, cookies, or background-upload paths/);
-  assert.match(report, /validly truncated tail can be indistinguishable/);
+  assert.match(report, /A separately retained checkpoint can detect a regenerated saved history/);
+  assert.match(report, /comparison with an independently held receipt/);
   assert.match(report, /IN KEEPING · Library systems continuity/);
   assert.doesNotMatch(report, /undefined|\[object Object\]/);
 });
 
 test("notebook reports embed Jost, site colors, and an offline CSP", async () => {
   const workspace = await createBlankWorkspace();
-  const technical = makeTechnicalReportHtml(workspace, "idle", GENERATED_AT);
-  const notice = makePublicNoticeHtml(workspace, GENERATED_AT);
+  const technical = await makeTechnicalReportHtml(workspace, "idle", GENERATED_AT);
+  const notice = await makePublicNoticeHtml(workspace, GENERATED_AT);
 
   for (const report of [technical, notice]) {
     assert.match(report, /data:font\/woff2;base64,/);
@@ -108,8 +121,8 @@ test("notebook reports embed Jost, site colors, and an offline CSP", async () =>
 
 test("all software diagrams are semantic linear flows with no crossing edges", async () => {
   const workspace = await createPublishableWorkspace();
-  const technical = makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
-  const notice = makePublicNoticeHtml(workspace, GENERATED_AT);
+  const technical = await makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
+  const notice = await makePublicNoticeHtml(workspace, GENERATED_AT);
 
   assert.match(technical, /Import trust boundary/);
   assert.match(technical, /Catalog lane/);
@@ -142,7 +155,7 @@ test("technical dynamic values are escaped without creating executable markup", 
   workspace.incidents[0].notes = ["<svg onload=alert(3)>"];
   workspace.incidents[0].evidence = ["A&B <unsafe>"];
 
-  const report = makeTechnicalReportHtml(workspace, "invalid", GENERATED_AT);
+  const report = await makeTechnicalReportHtml(workspace, "invalid", GENERATED_AT);
   assert.equal((report.match(/<script\b/g) ?? []).length, 0);
   assert.equal((report.match(/<img\b/g) ?? []).length, 0);
   assert.equal((report.match(/<svg\b/g) ?? []).length, 0);
@@ -162,7 +175,7 @@ test("technical report DOM identifiers remain unique after lossy ID normalizatio
   const firstSchema = makeArchiveSchema("blank", "First schema", "Q:A", GENERATED_AT);
   const secondSchema = makeArchiveSchema("blank", "Second schema", "Q-A", GENERATED_AT);
   revision.archiveSchemas = [firstSchema, secondSchema];
-  const report = makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
+  const report = await makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
   const ids = [...report.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
   const idSet = new Set(ids);
@@ -172,21 +185,26 @@ test("technical report DOM identifiers remain unique after lossy ID normalizatio
 });
 
 test("public notice uses a fixed projection and cannot carry internal evidence", async () => {
-  const workspace = await createPublishableWorkspace();
-  const revision = workspace.revisions.find((item) => item.id === workspace.activeRevisionId);
-  assert.ok(revision);
+  let workspace = await createPublishableWorkspace();
+  const initialRevision = workspace.revisions.find((item) => item.id === workspace.activeRevisionId);
+  assert.ok(initialRevision);
   workspace.name = "PRIVATE-WORKSPACE-SENTINEL";
-  revision.config.resolverBase = "https://PRIVATE-RESOLVER-SENTINEL.invalid";
-  revision.config.proxyPrefix = "https://PRIVATE-PROXY-SENTINEL.invalid";
   workspace.incidents[0].service = "PRIVATE-SERVICE-SENTINEL";
   workspace.incidents[0].title = "PRIVATE-TITLE-SENTINEL";
   workspace.incidents[0].ownerRole = "PRIVATE-OWNER-SENTINEL";
   workspace.incidents[0].nextAction = "PRIVATE-NEXT-SENTINEL";
   workspace.incidents[0].evidence = ["PRIVATE-EVIDENCE-SENTINEL"];
   workspace.incidents[0].notes = ["PRIVATE-NOTE-SENTINEL"];
-  revision.serviceRecords[0].values.scope = "PRIVATE-SERVICE-REGISTER-SENTINEL";
+  workspace = await updateConfig(workspace, {
+    ...initialRevision.config,
+    resolverBase: "https://private-resolver-sentinel.example.org/openurl",
+    proxyPrefix: "https://private-proxy-sentinel.example.org/login?url=",
+    defaultPickupLocation: "PRIVATE-PICKUP-SENTINEL",
+  });
+  const revision = workspace.revisions.find((item) => item.id === workspace.activeRevisionId);
+  assert.ok(revision);
 
-  const report = makePublicNoticeHtml(workspace, GENERATED_AT);
+  const report = await makePublicNoticeHtml(workspace, GENERATED_AT);
   assert.match(report, /Library service update/);
   assert.match(report, /Library service/);
   assert.match(report, /public file excludes catalog and archive records, service-register fields/i);
@@ -200,50 +218,207 @@ test("public notice uses a fixed projection and cannot carry internal evidence",
     "PRIVATE-NEXT-SENTINEL",
     "PRIVATE-EVIDENCE-SENTINEL",
     "PRIVATE-NOTE-SENTINEL",
-    "PRIVATE-SERVICE-REGISTER-SENTINEL",
     revision.id,
     revision.digest,
     workspace.incidents[0].id,
   ]) {
     assert.equal(report.toLowerCase().includes(sentinel.toLowerCase()), false);
   }
+
+  const fixture = await createFixtureWorkspace();
+  const serviceRecord = structuredClone(activeRevision(fixture).serviceRecords[0]);
+  serviceRecord.values.scope = "PRIVATE-SERVICE-REGISTER-SENTINEL";
+  workspace = await upsertServiceRecord(workspace, serviceRecord);
+  await assert.rejects(
+    () => makePublicNoticeHtml(workspace, GENERATED_AT),
+    /locally entered service record.*do(?:es)? not establish truth or authority/i,
+  );
 });
 
-test("blank reports retain explicit zero and no-issue states", async () => {
+test("blank reports retain explicit zero states without implying an all-clear", async () => {
   const workspace = await createBlankWorkspace();
-  const technical = makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
-  const notice = makePublicNoticeHtml(workspace, GENERATED_AT);
+  const technical = await makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
+  const notice = await makePublicNoticeHtml(workspace, GENERATED_AT);
 
-  assert.match(technical, /No active exceptions/);
+  assert.match(technical, /Review required/);
   assert.match(technical, /No metadata or access findings/);
   assert.match(technical, /No incidents were present/);
   assert.match(technical, /No archival schemas were present/);
   assert.match(technical, /No service records were present/);
-  assert.match(technical, /Not checked for this export/);
-  assert.match(notice, /No known service issues/);
+  assert.match(technical, /Internally consistent; not authenticated/);
+  assert.match(notice, /No active incident is recorded in this workspace/);
   assert.match(notice, /No affected services are currently listed/);
+});
+
+test("caller-declared audit state cannot override report self-validation", async () => {
+  const workspace = await createBlankWorkspace();
+  const callerInvalid = await makeTechnicalReportHtml(workspace, "invalid", GENERATED_AT);
+  const callerUnchecked = await makeTechnicalReportHtml(workspace, "not-checked", GENERATED_AT);
+
+  assert.equal(callerInvalid, callerUnchecked);
+  assert.match(callerInvalid, /Review required/);
+  assert.doesNotMatch(callerInvalid, /No active exceptions/);
+  assert.match(callerInvalid, /Internally consistent; not authenticated/);
+  assert.match(callerInvalid, /only (?:the )?information present in this workspace/i);
+  assert.match(callerInvalid, /absence of a record is not evidence/i);
+  assert.doesNotMatch(callerUnchecked, /status-ok/);
+});
+
+test("report generators do not trust caller-declared validity for a tampered snapshot", async () => {
+  const workspace = await createBlankWorkspace("Validated workspace");
+  workspace.name = "Substituted authority";
+
+  const technical = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT, { savedCopyStatus: "current" });
+  assert.match(technical, /Action required/);
+  assert.match(technical, /Mismatch detected/);
+  assert.doesNotMatch(technical, /No active exceptions/);
+  await assert.rejects(async () => makePublicNoticeHtml(workspace, GENERATED_AT), /validation|integrity|invalid/i);
+});
+
+test("clean and service-register status remains scoped to what this workspace records", async () => {
+  const blank = await createBlankWorkspace();
+  const localOnly = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-verified-local", continuityReason: "Matching local checkpoint; authenticity is not established." });
+  assert.match(localOnly, /Review required/);
+  assert.match(localOnly, /Local checkpoint only/);
+  assert.doesNotMatch(localOnly, /No active exceptions recorded in this workspace/);
+
+  const clean = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-corroborated", continuityReason: "Exact independently retained current receipt compared." });
+  assert.match(clean, /No active exceptions recorded in this workspace/);
+  assert.doesNotMatch(clean, /class="status-banner status-ok"/);
+  assert.match(clean, /Caller or interface reports that this session matches a named saved version/);
+  assert.match(clean, /did not independently verify browser-storage freshness/);
+
+  let blockedWorkspace = await createBlankWorkspace();
+  const fixture = await createFixtureWorkspace();
+  const serviceRecord = structuredClone(fixture.revisions.at(-1).serviceRecords[0]);
+  serviceRecord.state = "blocked";
+  blockedWorkspace = await upsertServiceRecord(blockedWorkspace, serviceRecord);
+  const blocked = await makeTechnicalReportHtml(blockedWorkspace, "valid", GENERATED_AT, { savedCopyStatus: "current" });
+  assert.match(blocked, /Action required/);
+
+  serviceRecord.state = "review";
+  blockedWorkspace = await upsertServiceRecord(blockedWorkspace, serviceRecord);
+  const review = await makeTechnicalReportHtml(blockedWorkspace, "valid", GENERATED_AT, { savedCopyStatus: "current" });
+  assert.match(review, /Review required/);
+});
+
+test("technical reports expose unverified evidence decisions and continuity limitations", async () => {
+  const blank = await createBlankWorkspace("Evidence-limited report");
+  const workspace = await recordEvidenceDisposition(blank, {
+    source: { kind: "workspace-history", filename: "fabricated.json", format: "workspace-backup-v2", bytes: 128, sha256: "a".repeat(64) },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: "b".repeat(64), parserProfile: "workspace-backup-v2" },
+    scope: { kind: "workspace", entityIds: [blank.activeRevisionId] },
+  }, {
+    decision: "admit-unverified", claimedOrigin: "unknown", custodyNote: "No independently established custody path.", actorRoleClaim: "Replacement operator", rationale: "Retain for diagnosis only.", policyReference: "INCIDENT-42", atBrowser: GENERATED_AT, timeBasis: "browser-clock-untrusted",
+  }, "Open fabricated history as unverified evidence");
+  const report = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "unanchored", continuityReason: "No independent checkpoint." });
+
+  assert.match(report, /Evidence disposition register/);
+  assert.match(report, /fabricated\.json/);
+  assert.match(report, /admit-unverified/);
+  assert.match(report, /No independently established custody path/);
+  assert.match(report, /unverified evidence/i);
+  assert.match(report, /Internal hashes alone do not detect a fully regenerated history/);
+  assert.doesNotMatch(report, /No active exceptions recorded in this workspace/);
+  await assert.rejects(makePublicNoticeHtml(workspace, GENERATED_AT), /unverified evidence admission|unverified or unattributed/i);
+});
+
+test("a later withdrawal cannot hide an earlier evidence admission from reports or Public Notice gating", async () => {
+  const blank = await createBlankWorkspace("Withdrawn evidence report");
+  const evidence = {
+    source: { kind: "workspace-history", filename: "disputed.json", format: "workspace-backup-v2", bytes: 128, sha256: "c".repeat(64) },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: "d".repeat(64), parserProfile: "workspace-backup-v2" },
+    scope: { kind: "workspace", entityIds: [blank.activeRevisionId] },
+  };
+  let workspace = await recordEvidenceDisposition(blank, evidence, {
+    decision: "admit-unverified", claimedOrigin: "unknown", custodyNote: "No independently established custody path.", actorRoleClaim: "Replacement operator", rationale: "Retain for diagnosis only.", policyReference: "INCIDENT-43", atBrowser: GENERATED_AT, timeBasis: "browser-clock-untrusted",
+  }, "Admit disputed history as unverified");
+  workspace = await recordEvidenceDisposition(workspace, evidence, {
+    decision: "withdraw", claimedOrigin: "unknown", custodyNote: "The admission claim was withdrawn without deleting retained content.", actorRoleClaim: "Replacement operator", rationale: "A conflicting source appeared.", policyReference: "INCIDENT-43", atBrowser: "2026-08-31T13:35:00.000Z", timeBasis: "browser-clock-untrusted",
+  }, "Withdraw disputed evidence claim");
+
+  const report = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-verified-local", continuityReason: "Local checkpoint matches; authenticity is not established." });
+  assert.match(report, /withdrawal alone cannot launder retained active content/i);
+  assert.match(report, />withdraw<\/td>/);
+  await assert.rejects(makePublicNoticeHtml(workspace, GENERATED_AT), /unverified evidence admission|unverified or unattributed/i);
+});
+
+test("technical report handling does not downgrade restricted content", async () => {
+  let workspace = await createBlankWorkspace("Restricted report");
+  const fixture = await createFixtureWorkspace();
+  const restricted = structuredClone(fixture.revisions.at(-1).serviceRecords[0]);
+  restricted.id = "SRV-RESTRICTED";
+  restricted.title = "Restricted custody details";
+  restricted.sensitivity = "restricted";
+  workspace = await upsertServiceRecord(workspace, restricted);
+
+  const report = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT, { savedCopyStatus: "current" });
+  assert.match(report, /Potentially restricted staff record — classify at highest included sensitivity before sharing/);
+  assert.doesNotMatch(report, /<strong>Staff operational record<\/strong>/);
+  assert.match(report, />restricted<\/td>/);
+});
+
+test("unsupported resolved incidents cannot disappear from truthful outputs", async () => {
+  let workspace = await createPublishableWorkspace();
+  workspace.incidents.forEach((incident) => {
+    incident.state = "resolved";
+    incident.ownerRole = "Service owner";
+    incident.notes = ["Closure evidence was reviewed."];
+  });
+  workspace.incidents[0].ownerRole = "Unassigned";
+  workspace.incidents[0].notes = [];
+  workspace = await recordWorkspaceAction(workspace, "Bind unsupported legacy closure fixture");
+
+  const technical = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
+  assert.match(technical, /Action required/);
+  assert.match(technical, /closure evidence.*missing|unsupported closure/i);
+  await assert.rejects(() => makePublicNoticeHtml(workspace, GENERATED_AT), /closure evidence/i);
+
+  workspace.incidents[0].ownerRole = "Service owner";
+  workspace.incidents[0].notes = ["Closure evidence was reviewed."];
+  workspace.incidents[0].nextAction = "";
+  workspace = await recordWorkspaceAction(workspace, "Bind missing legacy closure criterion fixture");
+  const missingCriterion = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
+  assert.match(missingCriterion, /Action required/);
+  assert.match(missingCriterion, /closure criterion|next action/i);
+  await assert.rejects(() => makePublicNoticeHtml(workspace, GENERATED_AT), /closure criterion|next action/i);
+});
+
+test("empty public notices disclose evidence scope instead of issuing an unqualified all-clear", async () => {
+  const workspace = await createBlankWorkspace();
+  const notice = await makePublicNoticeHtml(workspace, GENERATED_AT);
+
+  assert.doesNotMatch(notice, /No known service issues/);
+  assert.match(notice, /No active incident is recorded in this workspace/);
+  assert.match(notice, /does not show that every service was checked or working/i);
+  assert.match(notice, /Draft public information.*approval required/i);
 });
 
 test("fixed inputs generate byte-identical reports without mutating workspace", async () => {
   const workspace = await createPublishableWorkspace();
   const before = structuredClone(workspace);
-  const first = makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
-  const second = makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
-  const publicFirst = makePublicNoticeHtml(workspace, GENERATED_AT);
-  const publicSecond = makePublicNoticeHtml(workspace, GENERATED_AT);
+  const first = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
+  const second = await makeTechnicalReportHtml(workspace, "valid", GENERATED_AT);
+  const publicFirst = await makePublicNoticeHtml(workspace, GENERATED_AT);
+  const publicSecond = await makePublicNoticeHtml(workspace, GENERATED_AT);
 
   assert.equal(first, second);
   assert.equal(publicFirst, publicSecond);
   assert.deepEqual(workspace, before);
 });
 
-test("public notice generation blocks open Sample data incidents", async () => {
-  const workspace = await createFixtureWorkspace();
-  assert.throws(() => makePublicNoticeHtml(workspace, GENERATED_AT), /Sample data incidents/i);
+test("public notice generation blocks any workspace containing Sample data incidents", async () => {
+  let workspace = await createFixtureWorkspace();
+  await assert.rejects(() => makePublicNoticeHtml(workspace, GENERATED_AT), /Sample data incidents/i);
+  workspace.incidents.forEach((incident) => {
+    incident.state = "resolved";
+  });
+  workspace = await recordWorkspaceAction(workspace, "Bind resolved Sample data fixture");
+  await assert.rejects(() => makePublicNoticeHtml(workspace, GENERATED_AT), /containing Sample data incidents/i);
 });
 
 test("report CSS constrains reflow and assigns scroll ownership locally", async () => {
-  const report = makeTechnicalReportHtml(await createBlankWorkspace(), "idle", GENERATED_AT);
+  const report = await makeTechnicalReportHtml(await createBlankWorkspace(), "idle", GENERATED_AT);
   assert.match(report, /max-inline-size:100%/);
   assert.match(report, /min-block-size:100dvh/);
   assert.match(report, /max-block-size:min\(68dvh,48rem\)/);

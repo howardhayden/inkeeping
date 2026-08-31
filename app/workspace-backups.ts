@@ -1,4 +1,5 @@
 import { activeRevision, validateWorkspaceSnapshot, type Workspace } from "./lab-core.ts";
+import { assertSafeJsonText } from "./json-safety.ts";
 import { MAX_WORKSPACE_BYTES } from "./lab-storage.ts";
 
 export const WORKSPACE_BACKUP_MIME = "application/json";
@@ -16,6 +17,8 @@ export type WorkspaceBackupReview = {
   blocked: boolean;
   summary: string;
 };
+
+const workspaceBackupReviewBindings = new WeakMap<WorkspaceBackupReview, string>();
 
 export async function makeWorkspaceBackup(workspace: Workspace, createdAt = new Date().toISOString()): Promise<string> {
   const validated = await validateWorkspaceSnapshot(workspace);
@@ -55,7 +58,7 @@ export async function reviewWorkspaceBackup(file: File): Promise<WorkspaceBackup
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) return reject(review, "The backup contains disallowed control characters.");
 
   try {
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = assertSafeJsonText(text);
     inspect(parsed, 0);
     const envelope = object(parsed, "The backup envelope must be an object.");
     const current = envelope.schema === WORKSPACE_BACKUP_SCHEMA && envelope.version === WORKSPACE_BACKUP_VERSION;
@@ -71,10 +74,25 @@ export async function reviewWorkspaceBackup(file: File): Promise<WorkspaceBackup
     review.workspace = workspace;
     review.blocked = false;
     const revision = activeRevision(workspace);
-    review.summary = `${workspace.name} · ${revision.records.length} catalog · ${revision.archiveUnits?.length ?? 0} archival · ${revision.serviceRecords?.length ?? 0} service records. Open the reviewed copy, then create a named workspace if it should remain in this browser.`;
+    review.summary = `${workspace.name} · ${revision.records.length} catalog · ${revision.archiveUnits?.length ?? 0} archival · ${revision.serviceRecords?.length ?? 0} service records. Structure and internal consistency verified; authenticity, authorship, custody, completeness, authority, and trusted time are not established. Open the reviewed copy, then create a named workspace if it should remain in this browser.`;
+    workspaceBackupReviewBindings.set(review, await workspaceBackupReviewBinding(review));
     return review;
   } catch (error) {
     return reject(review, safeError(error));
+  }
+}
+
+export async function verifyWorkspaceBackupReviewBinding(review: WorkspaceBackupReview): Promise<boolean> {
+  const expected = workspaceBackupReviewBindings.get(review);
+  if (!expected || review.blocked || !review.workspace) return false;
+  try {
+    // JSON stringification alone is not a strict type boundary: values such as
+    // NaN can collide with reviewed null values. Revalidate the exact object at
+    // consumption so only the bounded JSON workspace that was reviewed opens.
+    await validateWorkspaceSnapshot(review.workspace);
+    return expected === await workspaceBackupReviewBinding(review);
+  } catch {
+    return false;
   }
 }
 
@@ -141,4 +159,15 @@ async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function workspaceBackupReviewBinding(review: WorkspaceBackupReview): Promise<string> {
+  return sha256Hex(JSON.stringify({
+    filename: review.filename,
+    bytes: review.bytes,
+    digest: review.digest,
+    workspace: review.workspace,
+    blocked: review.blocked,
+    summary: review.summary,
+  }));
 }

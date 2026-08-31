@@ -5,6 +5,7 @@ import test from "node:test";
 const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 const ui = await readFile(new URL("../app/continuity-lab.tsx", import.meta.url), "utf8");
 const storage = await readFile(new URL("../app/lab-storage.ts", import.meta.url), "utf8");
+const freshness = await readFile(new URL("../app/output-freshness.ts", import.meta.url), "utf8");
 const favicon = await readFile(new URL("../public/favicon.svg", import.meta.url), "utf8");
 
 test("application shell assigns one viewport-bounded scroll owner", () => {
@@ -46,10 +47,11 @@ test("report controls open or download HTML with a safe Blob lifecycle", () => {
 
 test("draft-only edits participate in navigation and unload loss guards", () => {
   assert.match(ui, /const draftEditors = useRef\(new Map<string, \(\) => void>\(\)\)/);
+  assert.match(ui, /useLayoutEffect\(\(\) => \{\s*register\(id, dirty, resetCurrent\)/);
   assert.match(ui, /if \(!dirty && !hasDraftChanges\) return/);
   assert.match(ui, /if \(!confirmDraftDiscard\(\)\) return false/);
   assert.match(ui, /useDraftLossGuard\(JSON\.stringify\(draft\) !== JSON\.stringify\(record\)/);
-  assert.match(ui, /useDraftLossGuard\(note\.length > 0/);
+  assert.match(ui, /useDraftLossGuard\(JSON\.stringify\(draft\) !== JSON\.stringify\(baseline\)/);
   assert.match(ui, /useDraftLossGuard\(JSON\.stringify\(draft\) !== JSON\.stringify\(config\)/);
   assert.match(ui, /useDraftRegistration\(Boolean\(name\)/);
 });
@@ -61,11 +63,14 @@ test("selection stays on the page that owns the selected record", () => {
   assert.match(ui, /if \(!confirmDiscard\(\)\) return; const next = paginate\(incidents/);
 });
 
-test("incident notes cannot cross selections or disappear after rejected writes", () => {
+test("incident updates cannot cross selections and resolution evidence is explicit", () => {
   assert.match(ui, /onUpdate: \(id: string, patch:[^\n]+\) => Promise<boolean>/);
-  assert.match(ui, /if \(await onUpdate\(selected\.id, \{ note \}\)\) setNote\(""\)/);
+  assert.match(ui, /await onUpdate\(incident\.id, patch\)/);
+  assert.match(ui, /required=\{resolving\}/);
+  assert.match(ui, /Required in the same update that resolves the incident/);
+  assert.match(ui, /IncidentUpdateForm key=\{`\$\{selected\.id\}:\$\{selected\.updatedAt\}`\}/);
   assert.match(ui, /selected\?\.id !== incident\.id && confirmDiscard\(\)\) onSelect\(incident\.id\)/);
-  assert.match(ui, /maxLength=\{2000\} rows=\{3\} disabled=\{busy\}/);
+  assert.match(ui, /maxLength=\{2000\} rows=\{3\} required=\{resolving\} disabled=\{busy\}/);
 });
 
 test("review inputs can re-read the same path and announce their result", () => {
@@ -138,7 +143,10 @@ test("identity and global status copy use the finished product language", () => 
   assert.match(ui, /notice && <div className="notice-bar"/);
   assert.match(ui, />Verify integrity<\/button>/);
   assert.match(ui, />Start blank working copy<\/button>/);
-  assert.match(ui, /Workspace data is internally consistent/);
+  assert.match(ui, /Full workspace structure and internal consistency verified/);
+  assert.match(ui, /Internally consistent; not authenticated/);
+  assert.match(ui, /integrityOutputBlocked = auditState !== "valid"/);
+  assert.match(ui, /Compatibility and operational outputs are blocked/);
   assert.doesNotMatch(ui, /Browser-local data|Private by default · No telemetry|Session active in memory|Not saved locally|SHA-256 linked events detect local alteration/);
   assert.doesNotMatch(ui, /<h2>Audit chain<\/h2>|<h2>Safeguards<\/h2>/);
   assert.doesNotMatch(ui, /<footer className="app-footer"|Blank workspace ready|Local-first archival and access continuity|00 · New workspace|Revision REV-/);
@@ -146,4 +154,69 @@ test("identity and global status copy use the finished product language", () => 
   assert.match(favicon, /#1b1d1a/);
   assert.match(favicon, /#950f22/);
   assert.doesNotMatch(favicon, /#077995/i);
+});
+
+test("outward artifacts share integrity, sample, and stale-session gates", () => {
+  assert.match(ui, /const outputGate: OutputGate = sampleContaminated/);
+  assert.match(ui, /activeLocalStale[\s\S]+Outputs are blocked because the named saved workspace changed in another tab/);
+  assert.ok((ui.match(/outputGate=\{outputGate\}/g) ?? []).length >= 4);
+  assert.match(ui, /disabled=\{outputGate\.blocked\}/);
+  assert.match(ui, /disabled=\{busy \|\| outputGate\.blocked\}/);
+  assert.match(ui, /const formatted = outputGate\.blocked \? ""/);
+  assert.match(ui, /Ordinary outward artifacts require a named, saved workspace/);
+  assert.match(ui, /Save the current workspace before generating ordinary outward artifacts/);
+  assert.match(ui, /verifyOutputFreshness\(workspace/);
+  assert.ok((ui.match(/verifyFreshness\("authoritative"\)/g) ?? []).length >= 5);
+  assert.match(ui, /verifyFreshness\(technical \? "diagnostic" : "authoritative"\)/);
+  assert.ok((ui.match(/await lease\.recheck\(\)/g) ?? []).length >= 6);
+  assert.match(freshness, /opened\.token === context\.activeLocal\.token/);
+  assert.match(freshness, /opened\.recoveredFromPrevious \|\| !sameToken \|\| !sameSessionState/);
+  assert.match(freshness, /savedStateDigest === await workspaceStateDigest\(workspace\)/);
+  assert.match(freshness, /current\.fingerprint !== initial\.fingerprint/);
+  assert.match(freshness, /currentArtifactWorkspaceDigest !== artifactWorkspaceDigest/);
+  assert.match(freshness, /context\.getPendingDrafts\(\)/);
+  assert.match(freshness, /context\.getOperationInProgress\(\)/);
+  assert.match(freshness, /context\.getStorageVersion\(\) !== context\.expectedStorageVersion/);
+  assert.match(ui, /hasDraftChanges[\s\S]+drafts are not part of the named saved generation/);
+  assert.match(ui, /getPendingDrafts: \(\) => draftEditors\.current\.size > 0/);
+  assert.match(ui, /getOperationInProgress: \(\) => operationActive\.current/);
+  assert.match(ui, /getStorageQuarantined: \(\) => storageQuarantined\.current/);
+  assert.match(ui, /const publicationStateBlocked = !activeLocal \|\| dirty \|\| activeStale/);
+  assert.match(ui, /Incident for this document/);
+  assert.match(ui, /makeOperationalDocument\(lease\.artifactWorkspace, documentKind, incidentBoundDocument \? selectedIncidentId : undefined\)/);
+  assert.match(ui, /makePublicNoticeHtml\(lease\.artifactWorkspace, generatedAt\)/);
+  assert.ok((ui.match(/activeRevision\(lease\.artifactWorkspace\)/g) ?? []).length >= 3);
+  assert.match(ui, /await verifyWorkspaceBackupReviewBinding\(reviewed\)/);
+  assert.match(ui, /blockingFindings = findings\.filter\(\(finding\) => finding\.severity === "error" \|\| finding\.severity === "warning"\)/);
+  assert.match(ui, /Informational duplicate notices.*do not permanently disable export/);
+});
+
+test("blank catalog workspaces cannot emit self-incompatible empty packages", () => {
+  assert.match(ui, /const catalogOutputBlocked = outputGate\.blocked \|\| records\.length === 0/);
+  assert.match(ui, /Catalog export requires at least one record/);
+  assert.match(ui, /disabled=\{catalogOutputBlocked\}/);
+});
+
+test("evidence admission and continuity are explicit non-authority gates", () => {
+  assert.match(ui, /Structural checks passed\. They do not establish truth, custody, completeness, or authority/);
+  assert.match(ui, /<option value="">Choose…<\/option><option value="admit-unverified">Admit as unverified evidence/);
+  assert.match(ui, /timeBasis: EVIDENCE_TIME_BASIS/);
+  assert.match(ui, /applyImport\(workspace, review, disposition\)/);
+  assert.match(ui, /applyArchiveImport\(workspace, source, disposition\)/);
+  assert.match(ui, /Open workspace backup as unverified evidence/);
+  assert.match(ui, /initializeLocalContinuityAnchor/);
+  assert.match(ui, /continuity-not-authenticity-v1|CONTINUITY_ACKNOWLEDGMENT/);
+  assert.match(ui, /Download independent receipt/);
+  assert.match(ui, /Compare independent receipt/);
+  assert.match(ui, /Ordinary outward artifacts require this exact saved generation to be rechecked against an independently retained current receipt/);
+  assert.match(ui, /independentReceipt: serialized/);
+  assert.match(ui, /openLocalWorkspace\(id, activeLocal\?\.independentReceipt \?\? null\)/);
+  assert.match(ui, /Ordinary outward artifacts are blocked by active unverified or unattributed content/i);
+  assert.ok(
+    ui.indexOf('if (disposition.decision !== "admit-unverified")')
+      < ui.indexOf('if (!confirmDraftDiscard("Open this workspace backup? Current changes will be lost.", dirty))'),
+    "backup rejection/withdrawal must be recorded before any replacement confirmation",
+  );
+  assert.match(ui, /disposition\.decision === "admit-unverified" && !confirmDiscard\(\)/);
+  assert.match(ui, /operator-withdrew[\s\S]+operator-rejected/);
 });

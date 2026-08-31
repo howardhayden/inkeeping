@@ -23,8 +23,10 @@ Serving the application still requires ordinary requests for HTML, CSS, JavaScri
 | Incident record | Service, severity/state, owner role, evidence, notes, next action, optional catalog link | Working copy, IndexedDB, backups, operational documents, Technical Report | Public Notice receives only a fixed nonsynthetic open-incident service-category projection |
 | Configuration | Resolver/proxy/pickup/member values and related operational settings | Working copy, revisions, IndexedDB, backups, Technical Report | Excluded from Public Notice |
 | Integrity metadata | Source SHA-256, revision/state/payload digests, linked audit events, local UUIDs, save tokens | Working copy, IndexedDB, backups, Technical Report | Excluded from Public Notice |
+| Evidence disposition claims | Claimed origin, custody note, actor-role claim, rationale, policy reference, untrusted browser time, exact source/review/scope digests | Working copy, revisions/audit, IndexedDB, backups, Technical Report | Excluded from Public Notice; never authenticated by the application |
+| Continuity metadata | Local workspace/lineage checkpoint, anchor digests, exact unsigned receipt | Anchor in IndexedDB; receipt in browser/OS download destinations | Excluded from ordinary content exports and workspace backup; not identity, custody, or trusted time |
 | Operator-entered workspace metadata | Workspace name; text entered into records, evidence, notes, and schemas | Memory, IndexedDB, backups, selected exports | Depends on selected export; excluded from Public Notice unless represented by the fixed service-category projection |
-| Sample data | Synthetic catalog/service/archive/incident examples created only by the Sample data action | Same locations as a working copy if the operator saves/exports it | Public Notice generation is blocked while synthetic open incidents are present |
+| Sample data | Synthetic catalog/service/archive/incident examples created only by the Sample data action | Same locations as a working copy if the operator saves/exports it | Public Notice generation is blocked while any synthetic incident is present, including a resolved one |
 | Platform request metadata | IP address and ordinary DNS/TLS/HTTP/cache metadata | Cloudflare and network/platform systems | Outside application workspace storage and governed by platform/account policy |
 
 The application does not inspect operator text for personal, confidential, regulated, export-controlled, or privileged information. A field's `restricted` sensitivity label is metadata for workflow; it does not encrypt or access-control that field.
@@ -39,17 +41,19 @@ Startup is blank. The current session is held in browser memory until the operat
 
 Named workspaces are plaintext objects in IndexedDB under the exact production origin. Confidentiality relies on the browser profile, operating-system account, disk/device controls, and institutional endpoint policy. The application does not apply field-level or database encryption. Browser eviction, profile deletion, private-browsing behavior, storage clearing, and device loss are external lifecycle events.
 
-The application validates and digest-binds saved state, but SHA-256 is not encryption. Workspace identifiers and optimistic tokens are random coordination values, not authentication credentials.
+The application internally validates saved state and binds local generations to manifest digests. An explicitly accepted local continuity anchor is stored separately from the workspace payload and advances atomically on verified saves. Both remain in the same origin/device/attacker domain. SHA-256, checkpoint status, workspace identifiers, and optimistic tokens are not encryption or authentication and do not establish authorship, custody, authority, truth, trusted time, or completeness.
 
 ### Downloads
 
-Catalog/archive/service exports, operational Markdown, Technical Reports, Public Notices, and workspace backups are plaintext. Workspace backup v2 requires the literal marker `plaintext-json-not-encrypted`; a missing or contrary marker rejects review. The marker provides notice only. Legacy version-1 backup envelopes remain reviewable without the marker for continuity.
+Catalog/archive/service exports, operational Markdown, Technical Reports, Public Notices, workspace backups, and continuity receipts are plaintext. Workspace backup v2 requires the literal marker `plaintext-json-not-encrypted`; a missing or contrary marker rejects review. The marker provides notice only. Legacy version-1 backup envelopes remain reviewable without the marker for workspace-payload recovery.
+
+A workspace backup includes the bounded workspace payload and its evidence-disposition claims but excludes IndexedDB manifests/generations/tokens, the separate local anchor, and downloaded receipts. A continuity receipt is an unsigned exact-state comparison object. It is not a signature, trusted timestamp, identity/custody record, or proof that its storage is independent. After every anchored save, the prior receipt is stale for the new checkpoint.
 
 After download, the file is governed by browser/OS destination behavior, filesystem permissions, endpoint backup/synchronization, email or collaboration systems, recipient actions, and the institution's retention and disposal procedures. Deleting a browser-local workspace cannot delete or recall downloaded copies.
 
 ### Origin changes
 
-IndexedDB is scoped by scheme, hostname, and port. Moving from a preview host to the canonical Hover/Cloudflare domain, or switching between apex and `www`, creates a different storage boundary. Migration requires an explicit verified workspace backup and review/open on the destination origin. DNS changes do not move IndexedDB.
+IndexedDB is scoped by scheme, hostname, and port. Moving from a preview host to the canonical Hover/Cloudflare domain, or switching between apex and `www`, creates a different storage boundary. Migration requires an explicit, internally validated workspace backup and an admit-unverified Open disposition on the destination origin. The destination receives neither the old local anchor nor its lineage identity; it begins unanchored and requires a separately documented baseline decision. Preserve the old backup and exact receipt as transition evidence. Validation does not establish authenticity or completeness, and DNS changes do not move IndexedDB.
 
 ## Collection and purpose limitation
 
@@ -63,7 +67,7 @@ Operators should collect the minimum necessary content:
 - omit patron, donor, student, employee, health, financial, or disciplinary data unless the institution has explicitly approved this browser-local plaintext workflow;
 - use Sample data for demonstration and training when live data is unnecessary;
 - use the Public Notice only for approved public service categories, and review it before publication; and
-- use the Technical Report only with recipients authorized for its complete operational content.
+- use the Technical Report only with recipients authorized for all operational content it includes.
 
 Imported URLs with credentials or secret-like query names are rejected, but this is a guardrail, not a secrets scanner.
 
@@ -75,7 +79,7 @@ Imported URLs with credentials or secret-like query names are rejected, but this
 | System owner | Maintain repository, dependency and release controls; review threat/risk changes; verify live response policy and Cloudflare account settings. |
 | Records/privacy/security reviewers | Classify intended content, approve retention/export handling, evaluate platform metadata, and define breach/escalation requirements. |
 | Library workflow owner | Define authoritative systems, crosswalk limitations, review expectations, naming/schema governance, and handoff procedure. |
-| Operator | Review Original/New blocks, avoid secrets and unnecessary personal data, save/export deliberately, protect downloads, and report anomalies. |
+| Operator | Review catalog Original/New blocks and archive/service active-value views; record only necessary unauthenticated evidence claims; distinguish unverified admission from authority; save/baseline/export deliberately; protect backups/receipts; report anomalies. |
 | Recipient | Handle plaintext outputs under the classification and retention rules communicated by the institution. |
 
 The application does not authenticate these roles. UI role labels and the audit value `Local operator` do not establish identity or authority.
@@ -92,19 +96,21 @@ Application capacity limits are operational bounds, not a retention schedule:
 
 The institution must decide how long to retain source files, workspaces, reports, exports, and quarantine evidence. Rotation of an old revision body does not authorize disposal. Conversely, a retained hash is not a recoverable copy of the removed content.
 
-Browser-local deletion removes the selected IndexedDB manifest/generations through an explicit confirmed action. It does not erase source files, exports, browser/OS backups, screenshots, platform request logs, or copies held by recipients. Data-removal requests therefore require a search of all institutionally governed destinations, not only IN KEEPING.
+Browser-local deletion removes the selected IndexedDB manifest, generations, and local continuity anchor through an explicit confirmed action. It does not erase source files, exports, downloaded backups/receipts, browser/OS backups, screenshots, platform request logs, or recipient copies. Data-removal requests therefore require a search of all institutionally governed destinations, not only IN KEEPING.
 
-Corrupt or orphaned local entries are quarantined. A verified recovery candidate is reconstructed into a new UUID workspace after explicit selection, digest verification, naming, and confirmation. The original bytes remain unchanged. Their eventual deletion must follow the institution's evidence and retention decision.
+Corrupt or orphaned local entries are quarantined. An internally consistent recovery candidate is reconstructed into a new UUID workspace after explicit selection, digest and complete-snapshot validation, naming, and confirmation. This does not authenticate the candidate or prove it complete. The original bytes remain unchanged. Their eventual deletion must follow the institution's evidence and retention decision.
 
 ## Public and staff documents
 
+Ordinary outward UI artifacts require a clean named generation corroborated by an exact independently supplied current receipt. They are blocked by pending drafts, an in-flight operation, quarantine or storage-epoch changes, active admitted-unverified evidence, and unattributed catalog, archive, or service content. The UI reopens that generation at click time, renders from the reopened snapshot, verifies the complete artifact-workspace digest, and reopens and rechecks storage immediately before activation. This limits accidental stale disclosure; it does not make file activation atomic with IndexedDB, prove later currency, authenticate content, or approve a recipient/publication. Technical Reports and current-session recovery backups are explicit diagnostic exceptions.
+
 ### Technical Report
 
-The Technical Report is a complete staff-facing post-run notebook HTML file. It can include catalog, archive, and service Original/New record blocks; source evidence and definitions; findings; incidents; schemas; configuration; revisions; audit values; safeguards; and production boundaries. Treat it at the highest classification represented by any included record. It is static, script-free, remote-resource-free, and plaintext.
+The Technical Report is a bounded diagnostic active-state notebook HTML file. It can include catalog **Original input** and **New output** blocks; archive/service **Entered active values** and **Canonical active record** blocks; evidence dispositions and their potentially sensitive custody/role/policy claims; current findings; incidents; schemas; configuration; revision/audit indexes; safeguards; and continuity/saved-copy limitations. It may intentionally describe an unsaved, stale, unanchored, or evidence-unverified open session. Treat it at the highest classification represented by any included value. It is static, script-free, remote-resource-free, and plaintext.
 
 ### Public Notice
 
-The Public Notice is produced by a separate fixed projection. It may include nonsynthetic open-incident service categories and general assistance/status content. It does not receive workspace name, raw evidence, notes, catalog/archive/service records, configuration, hashes, or staff-role values. Synthetic open incidents prevent generation.
+The Public Notice is produced by a separate fixed projection. It may include nonsynthetic open-incident service categories and general assistance/status content. It does not receive workspace name, raw evidence, notes, catalog/archive/service records, configuration, hashes, or staff-role values. Any synthetic incident prevents generation, regardless of whether it is open or resolved.
 
 This technical minimization does not constitute publication approval. A librarian/communications/privacy owner must verify that even category-level disclosure is appropriate, accurate, accessible, timely, and consistent with institutional policy.
 

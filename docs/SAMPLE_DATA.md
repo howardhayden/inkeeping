@@ -20,7 +20,7 @@ The sample is intended to make navigation, filters, record review, exports, inci
 
 - Names, systems, identifiers, URLs, checksums, and holdings scenarios are fabricated. They are not suitable as production policy, licensing interpretation, cataloging authority, preservation evidence, or repository configuration.
 - A sample checksum demonstrates formatting only; it is not fixity evidence for a real object.
-- The sample includes open incidents by design. Public Notice generation is blocked while a synthetic sample incident remains open, preventing demonstration language from being published as an institutional notice.
+- The sample includes synthetic incidents by design. Public Notice generation is blocked while any synthetic incident remains in the workspace, including after resolution, preventing demonstration language from being published as an institutional notice.
 - Native exports made from the sample remain sample artifacts even if a filename is changed. Treat them as disposable and do not ingest them into a production catalog, ERM, discovery index, repository, ArchivesSpace, AtoM, preservation system, or reporting warehouse.
 - The sample is not a golden data set, conformance suite, benchmark, security proof, accessibility certification, or substitute for staging with the institution’s own approved records.
 

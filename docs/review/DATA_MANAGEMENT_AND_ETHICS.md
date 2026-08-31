@@ -12,7 +12,7 @@ IN KEEPING should be governed so that:
 
 1. each use has a named library purpose and authoritative source;
 2. only the minimum necessary fields enter the workspace;
-3. untrusted files remain quarantined until professional review and explicit apply;
+3. untrusted files remain quarantined until professional review and an explicit `admit-unverified`, `reject`, or `withdraw` disposition, and applied/restored content remains unverified afterward;
 4. browser-local/plaintext storage is treated as a material confidentiality boundary;
 5. original evidence, normalized output, transformations, and known loss remain inspectable;
 6. public communication receives only an allowlisted projection and still requires human approval;
@@ -25,17 +25,17 @@ IN KEEPING should be governed so that:
 | Role | Required decision or action |
 | --- | --- |
 | Institutional system owner | Authorize the service purpose, budget, support, release, and decommissioning path |
-| Library workflow/data owner | Identify authoritative systems, minimum fields, semantics, access group, handoff, and reconciliation method |
+| Library workflow/data owner | Identify authoritative systems, minimum fields, semantics, access group, handoff, reconciliation method, and external evidence-corroboration record |
 | Records officer | Assign record series/schedules, legal-hold precedence, disposition authority, and evidence retention |
 | Privacy office/data protection function | Assess personal data, notices, lawful purpose/basis, rights requests, processors, transfers, and incident obligations |
 | Information security | Approve endpoint/browser, platform accounts, import testing, incident handling, and accepted security risks |
 | Accessibility authority | Approve evaluation method and any conformance statement; disposition barriers |
 | Research/IRB or other designated office | Determine whether an evaluation/research activity requires review, approval, or another official process |
 | Communications/service owner | Approve each Public Notice and its timing, accuracy, accessibility, and category-level disclosure |
-| Operator | Minimize entries, review Original/New blocks, avoid secrets, save/export deliberately, protect outputs, and report anomalies |
+| Operator | Minimize entries, review Original/New blocks, complete evidence dispositions without claiming authority, avoid secrets, save/export deliberately, protect outputs, and report anomalies |
 | Recipient | Apply classification, access, retention, and disposal rules to plaintext exports/reports/backups |
 
-The application does not authenticate or authorize these roles. A role label in a record or audit event is descriptive and cannot establish identity or authority.
+The application does not authenticate or authorize these roles. A role label in a record, audit event, or evidence disposition is a claim and cannot establish identity or authority. The `atBrowser` value attached to an evidence disposition is explicitly `browser-clock-untrusted`, not institutional time.
 
 ## Data inventory
 
@@ -44,12 +44,13 @@ The authoritative field and capacity definitions are in [Data model](../DATA_MOD
 | Data category | Typical content | Purpose | Application locations | External locations after explicit action | Principal concern |
 | --- | --- | --- | --- | --- | --- |
 | Import source | MARC, MODS, DC, EAD, RIS, BibTeX, CSV/TSV, JSON, schema packages | Review and transformation | Selected file; browser memory during review; bounded reconstructed source evidence after apply | Original source remains wherever selected from | Malformed/hostile input; copyright/license; embedded personal/restricted description |
+| Evidence dispositions | Bound source/review/scope digests; `admit-unverified`, `reject`, or `withdraw`; claimed origin/custody path; custody note; actor-role claim; rationale; policy/ticket reference; browser-clock time | Preserve the exact local decision made about structurally reviewed evidence | Memory, workspace, IndexedDB, backup, Technical Report | Approved evidence/change/records system when separately recorded | Claims can be false, identify staff or sensitive systems, expose ticket context, and be mistaken for authority |
 | Catalog metadata | Titles, names, dates, identifiers, links, subjects, rights/license, holdings/access state | Metadata continuity and handoff | Memory, revisions, IndexedDB, backup, Technical Report | Catalog exports and receiving systems | Personal names, suppressed holdings, rights errors, semantically incorrect crosswalk |
 | Archival schema/records | Description, accession, authority, agent, repository, digital object, rights, event, subject, location; custom definitions/mappings | Arrangement/description continuity and schema development | Memory, revisions, IndexedDB, backup, Technical Report | EAD/CSV/DCTAP/schema package; receiving systems | Donor restrictions, living persons, sensitive collections, location/security, publication status |
 | Service records | Collections, ER, discovery, preservation, technical services, archives, data services, rare materials | Operational reconciliation and handoff | Memory, revisions, IndexedDB, backup, Technical Report | Service JSON/CSV | Contract, pricing/fund, system configuration, sensitive locations, responsibilities |
 | Incidents | Service category, severity/state, evidence, notes, owner role, next action, optional catalog link | Operational continuity and response | Memory, IndexedDB, backup, documents, Technical Report | Selected documents; fixed Public Notice projection | Security details, people, vendor-confidential material, premature disclosure |
 | Configuration | Resolver/proxy/pickup/member values | Reproducible local operating context | Memory, revisions, IndexedDB, backup, Technical Report | Selected operational documents | Internal routing/context; accidental secret entry despite URL guardrails |
-| Integrity metadata | File/revision/state/event/payload digests, IDs, save tokens | Detect defined mismatch and connect revisions/events | Memory, IndexedDB, backup, Technical Report | Selected exports/reports | Misinterpretation as authenticity, identity, trusted time, or custody proof |
+| Integrity and continuity metadata | File/revision/state/event/payload/decision digests, IDs, save tokens, local continuity checkpoint and receipt | Detect defined mismatch and connect revisions/events/claims | Memory; workspace and IndexedDB stores; backup and Technical Report except that the separate continuity checkpoint is excluded from the workspace backup | Separately retained continuity receipt; selected reports | Misinterpretation as authenticity, identity, authority, trusted time, custody, or completeness proof |
 | Workspace metadata | Name, created/updated times | Local identification and recovery | Memory, IndexedDB, backup, Technical Report | Backup/report filenames/content | Names can reveal project/collection/incident context |
 | Generated staff files | Technical Report, backup, catalog/archive/service exports, operational Markdown | Handoff, recovery, review | Browser Blob until activation | Downloads, filesystems, synchronization/backup, recipients, receiving systems | Plaintext duplication, oversharing, retention sprawl |
 | Public projection | Nonsynthetic open-incident service categories and general status/help content | Draft public service notice | Generated in memory | Download/open/publication destination chosen by operator | Category-level disclosure, accuracy, timing, accessibility |
@@ -101,7 +102,7 @@ The public-HTTPS validator rejects credentials, private/reserved literal targets
 
 ### Catalog and discovery
 
-Structural validity is not descriptive truth. Names, subjects, classifications, suppression, holdings, availability, and access routes can stigmatize people or communities, expose restricted material, or deny access when wrong. A qualified reviewer must compare Original input, New output, local policy, and the authoritative source. Correction in IN KEEPING does not correct the ILS, repository, authority file, discovery index, or vendor knowledge base.
+Structural validity and `admit-unverified` are not descriptive truth. Names, subjects, classifications, suppression, holdings, availability, and access routes can stigmatize people or communities, expose restricted material, or deny access when wrong. A qualified reviewer must compare Original input, New output, local policy, and the authoritative source. Correction in IN KEEPING does not correct the ILS, repository, authority file, discovery index, or vendor knowledge base.
 
 ### Electronic resources and collections
 
@@ -125,7 +126,11 @@ Incident notes should contain the minimum operational evidence. Use an approved 
 
 ## Import and transformation ethics
 
-Files are treated as hostile until reviewed and applied. The [fail-closed import decision](../decisions/0004-fail-closed-import-quarantine.md) and implementation in [`app/lab-core.ts`](../../app/lab-core.ts), [`app/xml-safety.ts`](../../app/xml-safety.ts), and [`app/archival-schemas.ts`](../../app/archival-schemas.ts) reduce technical ambiguity; they do not establish consent, rights, authority, accuracy, representativeness, or freedom from harmful language.
+Files remain untrusted after review and Apply. The [fail-closed import decision](../decisions/0004-fail-closed-import-quarantine.md) and implementation in [`app/lab-core.ts`](../../app/lab-core.ts), [`app/xml-safety.ts`](../../app/xml-safety.ts), [`app/archival-schemas.ts`](../../app/archival-schemas.ts), and [`app/evidence-authority.ts`](../../app/evidence-authority.ts) reduce technical ambiguity and bind the exact decision to its source, structural review, parser profile, canonical payload, and entity scope. They do not establish consent, rights, authenticity, custody, authority, accuracy, representativeness, completeness, chronology, or freedom from harmful language.
+
+Every successful catalog, archival, or workspace-backup review requires a complete no-default disposition. `admit-unverified` is the only decision that may apply an import or open a backup. `reject` and `withdraw` do not admit the candidate. None of these decisions is a verified or trusted status; claimed origin/custody, actor role, rationale, policy reference, and browser time remain unauthenticated assertions. A validly structured fabricated source and matching fabricated decision can remain internally consistent.
+
+Imported or restored content is diagnostic-only for ordinary outward artifacts while it remains unverified. The institution must reconcile the exact bound source and entity scope in its authoritative process outside IN KEEPING. The application does not convert that external action into a self-issued trusted state. Withdrawal cannot rehabilitate content already retained in a revision: the affected content remains blocked until a governed revision removes or supersedes it, and the external record preserves the reason and disposition.
 
 The two-block Original input / New output record is an ethical as well as technical control: it preserves reviewability and prevents a short system-generated assurance from replacing evidence. Operators must record known crosswalk loss and retain the authoritative source/lossless package. Automated normalization must not be represented as neutral judgment.
 
@@ -139,15 +144,17 @@ The working copy begins in memory. Creating/saving a named workspace writes plai
 
 ### Files
 
-Backups, reports, and exports are plaintext. Workspace backup v2 includes the literal marker `plaintext-json-not-encrypted`; see [`app/workspace-backups.ts`](../../app/workspace-backups.ts). The marker is disclosure, not protection. If approved data requires encryption at rest or in transfer, use an institutionally managed destination/container and key process outside the application. Do not invent an ad hoc password-encrypted archive or transmit passwords alongside files.
+Backups, reports, exports, and continuity receipts are plaintext. Workspace backup v2 includes the literal marker `plaintext-json-not-encrypted`; see [`app/workspace-backups.ts`](../../app/workspace-backups.ts). The marker is disclosure, not protection. Opening a reviewed backup also requires a new outer `admit-unverified` disposition bound to that backup file and reviewed workspace; it does not corroborate evidence dispositions nested inside the workspace. If approved data requires encryption at rest or in transfer, use an institutionally managed destination/container and key process outside the application. Do not invent an ad hoc password-encrypted archive or transmit passwords alongside files.
+
+A workspace backup excludes the separately stored local continuity checkpoint. A continuity receipt is only comparison metadata and cannot restore the workspace. After restore or origin migration, preserve the source backup and any independently held receipt, create and save the destination workspace deliberately, and establish or compare the destination checkpoint through the approved continuity procedure. Neither a checkpoint nor its receipt authenticates the evidence or actor.
 
 ### Origin migration
 
-IndexedDB follows exact scheme/hostname/port. Moving between preview, apex, `www`, or another domain does not move data. Migration uses an explicitly downloaded, verified plaintext backup and a deliberate create/save/reopen at the destination. The backup must travel only through an approved encrypted and access-controlled route. [ADR 0002](../decisions/0002-single-canonical-origin.md) governs this boundary.
+IndexedDB follows exact scheme/hostname/port. Moving between preview, apex, `www`, or another domain does not move data. Migration uses an explicitly downloaded plaintext backup that has passed internal review, an outer unverified Open disposition, and a deliberate create/save/reopen at the destination. Internal review is not authenticity or custody verification. The backup and any separately retained continuity receipt must travel only through an approved encrypted and access-controlled route. [ADR 0002](../decisions/0002-single-canonical-origin.md) governs this boundary.
 
 ### Recipient controls
 
-Before download or transfer, record the file's classification, purpose, recipient role, approved location, retention, and required deletion. Technical Report and backup inherit the highest classification of any included value. Static/script-free HTML is safer to open but is not less sensitive.
+Before download or transfer, record the file's classification, purpose, recipient role, approved location, retention, and required deletion. Technical Report and backup inherit the highest classification of any included value. Static/script-free HTML is safer to open but is not less sensitive. For ordinary outward files, the interface's click-time lease reopens the exact named saved generation, renders from it, and rechecks it immediately before activation; this limits stale-session output but does not grant publication, custody, semantic, or recipient authority. Technical Reports, plaintext backups, and continuity receipts are intentionally available as bounded diagnostic/recovery/comparison artifacts and require their own handling decisions.
 
 ## Retention and disposition
 
@@ -158,9 +165,11 @@ Complete this schedule before non-synthetic use:
 | Record/artifact | Authoritative copy/location | Trigger | Retention | Hold precedence | Disposition method/authority | Evidence retained |
 | --- | --- | --- | --- | --- | --- | --- |
 | Selected import source |  |  |  |  |  |  |
+| Evidence disposition and external corroboration record |  |  |  |  |  |  |
 | Browser-local workspace |  |  |  |  |  |  |
 | Quarantined manifest/generation |  |  |  |  |  |  |
 | Workspace backup |  |  |  |  |  |  |
+| Local continuity checkpoint / separately retained receipt |  |  |  |  |  |  |
 | Catalog/archive/service export |  |  |  |  |  |  |
 | Technical Report |  |  |  |  |  |  |
 | Public Notice source/approved copy |  |  |  |  |  |  |
@@ -175,6 +184,8 @@ Corrupt/orphaned storage is retained in quarantine until an authorized dispositi
 ## Accuracy, correction, and accountability
 
 IN KEEPING uses immutable revisions for catalog, configuration, archive, and service state. A correction creates a new revision; it does not silently edit a retained revision or reconcile the authoritative source. Operators must identify who owns the source correction and confirm completion in that system.
+
+An evidence disposition is also a local record, not proof of the claim it contains. `reject` and `withdraw` must remain visible under the applicable schedule. A withdrawal cannot be interpreted as validation of retained content or as permission to export it; removal or supersession requires a governed revision and reconciliation in the authoritative system.
 
 Linked SHA-256 events and state/revision/payload digests detect defined internal inconsistencies. They do not authenticate the operator, prove lawful authority, provide a trusted timestamp, demonstrate complete history after valid truncation, or prevent a writer from recomputing a consistent chain. Never use the chain as the sole forensic, evidentiary, or nonrepudiation record. Use an approved external ticket, records, signature, or timestamping system when those qualities are required.
 
@@ -234,7 +245,7 @@ The application has no remote kill, recall, account lock, or file deletion capab
 
 Repository source and synthetic fixtures may be shared only under the repository's actual license and notice files. A workspace's metadata may have separate copyright, database right, license, donor, privacy, cultural, or contractual restrictions. Software availability does not confer rights to source records or generated exports.
 
-Do not publish a Technical Report or backup. A Public Notice is a draft until accepted by the authorized service, communications, privacy, and accessibility owners. Evaluation results must not disclose vulnerability details, internal routes, participant identities, collection restrictions, or confidential vendor terms. Secondary use requires a new purpose and, when applicable, a new institutional determination.
+Do not publish a Technical Report, backup, or continuity receipt. Imported/restored content that is admitted only as unverified remains diagnostic-only in the application pending the institution's external governed corroboration and correction process. A Public Notice is a draft until accepted by the authorized service, communications, privacy, and accessibility owners. Click-time saved-state verification prevents a defined stale-copy failure; it does not approve the notice or any other derivative. Evaluation results must not disclose vulnerability details, internal routes, participant identities, collection restrictions, or confidential vendor terms. Secondary use requires a new purpose and, when applicable, a new institutional determination.
 
 ## Maintenance and decommissioning
 
@@ -249,6 +260,8 @@ At exit, preserve required source/lockfile/SBOM/release/format evidence, migrate
 | Approved purposes and workflows |  |
 | Approved/prohibited data classifications |  |
 | Data owners and authoritative systems |  |
+| External evidence-corroboration process and record |  |
+| Evidence-disposition roles, policy references, and withdrawal procedure |  |
 | Minimum field plan |  |
 | Operator/recipient roles |  |
 | Endpoint/browser/download controls |  |

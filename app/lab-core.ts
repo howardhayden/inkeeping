@@ -1,7 +1,22 @@
-import { validateArchiveSchema, validateArchiveSet, validateArchiveUnit, type ArchiveSchema, type ArchiveUnit } from "./archival-schemas.ts";
+import { validateArchiveSchema, validateArchiveSet, validateArchiveUnit, verifyArchiveImportReviewBinding, type ArchiveImportReview, type ArchiveSchema, type ArchiveUnit } from "./archival-schemas.ts";
 import { makeServiceRecord, serviceDefinition, validateServiceRecords, type ServiceRecord, type ServiceValue } from "./service-register.ts";
 import { reviewPublicHttpsUrl } from "./public-url.ts";
+import { assertSafeJsonText } from "./json-safety.ts";
+import { assertIdentityText, containsUnicodeFormatControl } from "./identity-safety.ts";
 import { assertSafeXmlText, assertXmlElementNamespaces } from "./xml-safety.ts";
+import {
+  canonicalDigest as canonicalEvidenceDigest,
+  createEvidenceApplicationRecord,
+  createEvidenceAuthorityRecord,
+  validateEvidenceApplicationLink,
+  validateEvidenceApplicationRecord,
+  validateEvidenceAuthorityRecord,
+  type EvidenceApplicationInput,
+  type EvidenceApplicationRecord,
+  type EvidenceAuthorityRecord,
+  type EvidenceDescriptor,
+  type EvidenceDisposition,
+} from "./evidence-authority.ts";
 
 export const PRODUCT_NAME = "IN KEEPING";
 export const PRODUCT_DESCRIPTOR = "Library systems continuity workbench";
@@ -188,7 +203,24 @@ export type Workspace = {
   activeRevisionId: string;
   revisions: Revision[];
   incidents: Incident[];
+  /** Explicit local dispositions of reviewed evidence; never an authority claim. */
+  evidenceAuthority?: EvidenceAuthorityRecord[];
+  /** Content-bound outcomes linking evidence decisions to attempted application. */
+  evidenceApplications?: EvidenceApplicationRecord[];
   audit: AuditEvent[];
+};
+
+export type EvidenceDispositionInput = EvidenceDisposition;
+export type EvidenceDescriptorInput = EvidenceDescriptor;
+export type EvidenceApplicationInputValue = EvidenceApplicationInput;
+
+export type ActiveEvidenceAssessment = {
+  blocked: boolean;
+  activeUnverifiedDecisionDigests: string[];
+  unattributedCatalogIds: string[];
+  unattributedArchiveIds: string[];
+  unattributedServiceIds: string[];
+  reason: string;
 };
 
 export type ImportReview = {
@@ -201,6 +233,10 @@ export type ImportReview = {
   blocked: boolean;
   summary: string;
 };
+
+// Successful file review objects are bound in memory. A copied or mutated
+// object cannot retain the capability to apply the originally reviewed bytes.
+const importReviewBindings = new WeakMap<ImportReview, string>();
 
 export type ReviewedSource = {
   filename: string;
@@ -525,6 +561,8 @@ export async function createFixtureWorkspace(): Promise<Workspace> {
     activeRevisionId: revision.id,
     revisions: [revision],
     incidents: structuredClone(FIXTURE_INCIDENTS),
+    evidenceAuthority: [],
+    evidenceApplications: [],
     audit: [],
   };
   return appendAudit(workspace, "Initialize", revision.id, "accepted");
@@ -560,6 +598,8 @@ export async function createBlankWorkspace(name = "Working copy"): Promise<Works
       activeRevisionId: revision.id,
       revisions: [revision],
       incidents: [],
+      evidenceAuthority: [],
+      evidenceApplications: [],
       audit: [],
     },
     "Initialize",
@@ -571,6 +611,76 @@ export async function createBlankWorkspace(name = "Working copy"): Promise<Works
 export function activeRevision(workspace: Workspace): Revision {
   return workspace.revisions.find((revision) => revision.id === workspace.activeRevisionId)
     ?? workspace.revisions[workspace.revisions.length - 1];
+}
+
+/**
+ * Resolve evidence barriers against the exact active revision. Historical
+ * decisions remain in the register, but a failed application or a source whose
+ * scoped entities are no longer active cannot permanently latch every output.
+ * Legacy decisions without an application outcome are treated conservatively
+ * as potentially applied. Manually entered archive and service records are
+ * explicitly unattributed because those models retain no source-level proof.
+ */
+export function assessActiveEvidence(workspace: Workspace): ActiveEvidenceAssessment {
+  const revision = activeRevision(workspace);
+  const applications = new Map((workspace.evidenceApplications ?? []).map((item) => [item.decisionRecordSha256, item]));
+  const activeDecisions = (workspace.evidenceAuthority ?? []).filter((decision) => {
+    if (decision.disposition.decision !== "admit-unverified") return false;
+    const application = applications.get(decision.recordSha256);
+    if (application?.outcome === "not-applied") return false;
+    const ids = new Set(decision.evidence.scope.entityIds);
+    switch (decision.evidence.source.kind) {
+      case "catalog-import":
+        return revision.records.some((record) => ids.has(record.id) && record.source.digest === decision.evidence.source.sha256);
+      case "archive-import":
+        return (revision.archiveUnits ?? []).some((unit) => ids.has(unit.id))
+          || (revision.archiveSchemas ?? []).some((schema) => ids.has(`schema:${schema.id}`));
+      case "workspace-backup":
+      case "workspace-history":
+        return true;
+      default:
+        if (decision.evidence.scope.kind === "workspace") return true;
+        if (decision.evidence.scope.kind === "catalog-records") return revision.records.some((record) => ids.has(record.id));
+        if (decision.evidence.scope.kind === "archive-records") return (revision.archiveUnits ?? []).some((unit) => ids.has(unit.id)) || (revision.archiveSchemas ?? []).some((schema) => ids.has(`schema:${schema.id}`));
+        if (decision.evidence.scope.kind === "service-records") return (revision.serviceRecords ?? []).some((record) => ids.has(record.id));
+        return ids.size > 0;
+    }
+  });
+
+  const coveredCatalog = new Set<string>();
+  const coveredArchive = new Set<string>();
+  for (const decision of activeDecisions) {
+    if (decision.evidence.source.kind === "catalog-import") {
+      for (const id of decision.evidence.scope.entityIds) coveredCatalog.add(`${id}\u0000${decision.evidence.source.sha256}`);
+    }
+    if (decision.evidence.source.kind === "archive-import") {
+      for (const id of decision.evidence.scope.entityIds) coveredArchive.add(id);
+    }
+  }
+
+  const unattributedCatalogIds = revision.records
+    .filter((record) => record.source.format !== "fixture" && !coveredCatalog.has(`${record.id}\u0000${record.source.digest}`))
+    .map((record) => record.id);
+  const unattributedArchiveIds = [
+    ...(revision.archiveSchemas ?? []).filter((schema) => !coveredArchive.has(`schema:${schema.id}`)).map((schema) => `schema:${schema.id}`),
+    ...(revision.archiveUnits ?? []).filter((unit) => !coveredArchive.has(unit.id)).map((unit) => unit.id),
+  ];
+  // Service records currently have no distinct source payload in the model.
+  // Treating them as locally verified would silently grant authority to typed
+  // but potentially fabricated operator entry.
+  const unattributedServiceIds = (revision.serviceRecords ?? []).map((record) => record.id);
+  const blocked = activeDecisions.length > 0 || unattributedCatalogIds.length > 0 || unattributedArchiveIds.length > 0 || unattributedServiceIds.length > 0;
+  const reason = blocked
+    ? `Active content includes ${activeDecisions.length} unverified evidence admission${activeDecisions.length === 1 ? "" : "s"}, ${unattributedCatalogIds.length} unattributed catalog record${unattributedCatalogIds.length === 1 ? "" : "s"}, ${unattributedArchiveIds.length} unattributed archival object${unattributedArchiveIds.length === 1 ? "" : "s"}, and ${unattributedServiceIds.length} locally entered service record${unattributedServiceIds.length === 1 ? "" : "s"}. Structural validity and local entry do not establish truth or authority.`
+    : "No active unverified or unattributed record content was found in the current revision.";
+  return {
+    blocked,
+    activeUnverifiedDecisionDigests: activeDecisions.map((item) => item.recordSha256),
+    unattributedCatalogIds,
+    unattributedArchiveIds,
+    unattributedServiceIds,
+    reason,
+  };
 }
 
 export function checkRecords(records: CatalogRecord[], maximum = Number.POSITIVE_INFINITY): Finding[] {
@@ -656,13 +766,20 @@ export async function reviewImport(file: File): Promise<ImportReview> {
 
   try {
     if (isJson) {
-      const parsed = JSON.parse(text) as unknown;
+      const parsed = assertSafeJsonText(text);
       if (file.size > MAX_FILE_BYTES && !isCatalogPacket(parsed)) return blockedReview(base, "FILE_TOO_LARGE", "Only a strictly versioned IN KEEPING packet may exceed the 5 MiB foreign-file limit.");
       inspectJson(parsed, 0);
       if (isCatalogPacket(parsed)) {
         base.format = "in-keeping-json";
-        base.records = parseJsonPacket(text, base.filename, base.digest);
-      } else if (isJsonLd(parsed) || lowerName.endsWith(".jsonld")) {
+        base.records = parseJsonPacket(parsed, base.filename, base.digest);
+      } else if (lowerName.endsWith(".jsonld")) {
+        base.format = "jsonld";
+        base.records = parseJsonLd(parsed, base.filename, base.digest);
+      } else if (lowerName.endsWith(".csl.json")) {
+        if (isJsonLd(parsed)) throw new Error("A .csl.json file may not declare a JSON-LD context or graph; use .jsonld for JSON-LD.");
+        base.format = "csl-json";
+        base.records = parseCslJson(parsed, base.filename, base.digest);
+      } else if (isJsonLd(parsed)) {
         base.format = "jsonld";
         base.records = parseJsonLd(parsed, base.filename, base.digest);
       } else {
@@ -722,15 +839,19 @@ export async function reviewImport(file: File): Promise<ImportReview> {
     : base.blocked
     ? `${base.records.length} records reviewed; errors must be corrected before apply.`
     : `${base.records.length} records ready for review and apply.`;
+  if (!base.blocked) importReviewBindings.set(base, await importReviewBinding(base));
   return base;
 }
 
-export async function applyImport(workspace: Workspace, review: ImportReview): Promise<Workspace> {
+export async function applyImport(workspace: Workspace, review: ImportReview, disposition: EvidenceDispositionInput): Promise<Workspace> {
   const sourceTarget = reviewedSourceAuditTarget(review);
   let trustedRecords: boolean;
   try {
     review.records.forEach((record, index) => validateStoredRecord(record, index + 1));
-    trustedRecords = trustedReviewedSource(review)
+    const expectedBinding = importReviewBindings.get(review);
+    trustedRecords = Boolean(expectedBinding)
+      && expectedBinding === await importReviewBinding(review)
+      && trustedReviewedSource(review)
       && review.format !== "unknown"
       && review.records.every((record) => record.source.digest === review.digest && record.source.label === review.filename && record.source.format === review.format)
       && review.records.length <= MAX_RECORDS
@@ -741,16 +862,60 @@ export async function applyImport(workspace: Workspace, review: ImportReview): P
   if (review.blocked || review.records.length === 0 || !trustedRecords) {
     return appendAudit(workspace, "Reject import", sourceTarget, "rejected");
   }
+  const authorityRecord = await createEvidenceAuthorityRecord({
+    source: { kind: "catalog-import", filename: review.filename, format: review.format, bytes: review.bytes, sha256: review.digest },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest(review.records), parserProfile: `catalog-${review.format}-v1` },
+    scope: { kind: "catalog-records", entityIds: review.records.map((record) => record.id) },
+  }, disposition);
+  const authorityTarget = `evidence:${authorityRecord.recordSha256} · source:${review.digest}`;
+  if (authorityRecord.disposition.decision !== "admit-unverified") {
+    return appendEvidenceDecisionOutcome(
+      workspace,
+      authorityRecord,
+      {
+        outcome: "not-applied",
+        reason: authorityRecord.disposition.decision === "withdraw" ? "operator-withdrew" : "operator-rejected",
+        detail: authorityRecord.disposition.decision === "withdraw" ? "The operator withdrew the reviewed evidence; no records were applied." : "The operator rejected the reviewed evidence; no records were applied.",
+        resultingRevisionId: null,
+        resultingRevisionDigest: null,
+      },
+      authorityRecord.disposition.decision === "withdraw" ? "Withdraw evidence admission" : "Reject reviewed evidence",
+      authorityTarget,
+      "rejected",
+    );
+  }
   const current = activeRevision(workspace);
-  if (current.records.length + review.records.length > MAX_RECORDS) return appendAudit(workspace, "Reject import over workspace record limit", sourceTarget, "rejected");
+  if (current.records.length + review.records.length > MAX_RECORDS) {
+    return appendEvidenceDecisionOutcome(workspace, authorityRecord, {
+      outcome: "not-applied",
+      reason: "workspace-record-limit",
+        detail: "The operator admitted the reviewed source as unverified evidence, but destination capacity prevented application.",
+        resultingRevisionId: null,
+        resultingRevisionDigest: null,
+    }, "Reject import over workspace record limit", authorityTarget, "rejected");
+  }
   const existingIds = new Set(current.records.map((record) => record.id));
   const conflicts = review.records.filter((record) => existingIds.has(record.id));
   if (conflicts.length) {
-    return appendAudit(workspace, "Reject conflicting import", sourceTarget, "rejected");
+    return appendEvidenceDecisionOutcome(workspace, authorityRecord, {
+      outcome: "not-applied",
+      reason: "destination-identity-conflict",
+      detail: `The operator admitted the reviewed source as unverified evidence, but ${conflicts.length} destination record ID conflict${conflicts.length === 1 ? "" : "s"} prevented application.`,
+      resultingRevisionId: null,
+      resultingRevisionDigest: null,
+    }, "Reject conflicting import", authorityTarget, "rejected");
   }
   const existingIdentifiers = new Set(current.records.flatMap((record) => record.identifiers.map((identifier) => `${identifier.scheme}:${normalizeIdentifier(identifier)}`)));
   const identifierConflict = review.records.some((record) => record.identifiers.some((identifier) => existingIdentifiers.has(`${identifier.scheme}:${normalizeIdentifier(identifier)}`)));
-  if (identifierConflict) return appendAudit(workspace, "Reject duplicate stable identifier", sourceTarget, "rejected");
+  if (identifierConflict) {
+    return appendEvidenceDecisionOutcome(workspace, authorityRecord, {
+      outcome: "not-applied",
+      reason: "destination-identity-conflict",
+      detail: "The operator admitted the reviewed source as unverified evidence, but a duplicate stable identifier prevented application.",
+      resultingRevisionId: null,
+      resultingRevisionDigest: null,
+    }, "Reject duplicate stable identifier", authorityTarget, "rejected");
+  }
   const records = [...current.records, ...structuredClone(review.records)];
   const config = structuredClone(current.config);
   const createdAt = new Date().toISOString();
@@ -771,8 +936,19 @@ export async function applyImport(workspace: Workspace, review: ImportReview): P
     updatedAt: createdAt,
     activeRevisionId: revision.id,
     revisions: retainRevisions(workspace.revisions, revision),
+    evidenceAuthority: [...(workspace.evidenceAuthority ?? []), authorityRecord],
+    evidenceApplications: [
+      ...(workspace.evidenceApplications ?? []),
+      await createEvidenceApplicationRecord(authorityRecord, {
+        outcome: "applied",
+        reason: "catalog-import-applied",
+        detail: "The reviewed catalog records were applied to the named resulting revision as unverified evidence.",
+        resultingRevisionId: revision.id,
+        resultingRevisionDigest: revision.digest,
+      }),
+    ],
   };
-  return appendAudit(next, "Apply reviewed import", sourceTarget, "accepted");
+  return appendAudit(next, "Apply reviewed import as unverified evidence", authorityTarget, "accepted");
 }
 
 export async function updateConfig(workspace: Workspace, config: LabConfig): Promise<Workspace> {
@@ -885,13 +1061,78 @@ export async function removeArchiveUnit(workspace: Workspace, unitId: string): P
   return archiveRevision(workspace, current, structuredClone(current.archiveSchemas ?? []), units, `Remove archive record ${unitId}`, "Remove archival record", unitId);
 }
 
-export async function applyArchiveImport(workspace: Workspace, schema: ArchiveSchema, importedUnits: ArchiveUnit[], source: ReviewedSource): Promise<Workspace> {
+export async function applyArchiveImport(workspace: Workspace, source: ArchiveImportReview, disposition: EvidenceDispositionInput): Promise<Workspace> {
+  const schema = source.schema;
+  const importedUnits = source.units;
+  if (!schema || source.blocked || !(await verifyArchiveImportReviewBinding(source))) throw new Error("Archival import review binding is missing or changed; review the source file again.");
   validateArchiveSet([schema], importedUnits);
   if (!trustedReviewedSource(source) || source.format === "unknown") throw new Error("Archival import provenance is invalid or incomplete.");
-  const sourceTarget = reviewedSourceAuditTarget(source);
+  const authorityRecord = await createEvidenceAuthorityRecord({
+    source: { kind: "archive-import", filename: source.filename, format: source.format, bytes: source.bytes, sha256: source.digest },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest({ schema, units: importedUnits }), parserProfile: `archive-${source.format}-v1` },
+    scope: { kind: "archive-records", entityIds: [...new Set([`schema:${schema.id}`, ...importedUnits.map((unit) => unit.id)])] },
+  }, disposition);
+  const authorityTarget = `evidence:${authorityRecord.recordSha256} · source:${source.digest}`;
+  if (authorityRecord.disposition.decision !== "admit-unverified") {
+    return appendEvidenceDecisionOutcome(
+      workspace,
+      authorityRecord,
+      {
+        outcome: "not-applied",
+        reason: authorityRecord.disposition.decision === "withdraw" ? "operator-withdrew" : "operator-rejected",
+        detail: authorityRecord.disposition.decision === "withdraw" ? "The operator withdrew the reviewed archival evidence; no records were applied." : "The operator rejected the reviewed archival evidence; no records were applied.",
+        resultingRevisionId: null,
+        resultingRevisionDigest: null,
+      },
+      authorityRecord.disposition.decision === "withdraw" ? "Withdraw evidence admission" : "Reject reviewed evidence",
+      authorityTarget,
+      "rejected",
+    );
+  }
   const current = activeRevision(workspace); const schemas = structuredClone(current.archiveSchemas ?? []); const units = structuredClone(current.archiveUnits ?? []);
-  if (schemas.some((item) => item.id === schema.id) || importedUnits.some((item) => units.some((existing) => existing.id === item.id))) throw new Error("Imported archival identifiers conflict with this workspace.");
-  return archiveRevision(workspace, current, [...schemas, structuredClone(schema)], [...units, ...structuredClone(importedUnits)], `Import ${schema.name}`, "Apply archival import", sourceTarget);
+  if (schemas.some((item) => item.id === schema.id) || importedUnits.some((item) => units.some((existing) => existing.id === item.id))) {
+    return appendEvidenceDecisionOutcome(workspace, authorityRecord, {
+      outcome: "not-applied",
+      reason: "destination-identity-conflict",
+      detail: "The operator admitted the reviewed archival source as unverified evidence, but a destination schema or record identity conflict prevented application.",
+      resultingRevisionId: null,
+      resultingRevisionDigest: null,
+    }, "Reject conflicting archival import", authorityTarget, "rejected");
+  }
+  const archiveSchemas = [...schemas, structuredClone(schema)];
+  const archiveUnits = [...units, ...structuredClone(importedUnits)];
+  validateArchiveSet(archiveSchemas, archiveUnits);
+  const createdAt = new Date().toISOString();
+  const records = structuredClone(current.records);
+  const config = structuredClone(current.config);
+  const serviceRecords = structuredClone(current.serviceRecords ?? []);
+  const revision: Revision = {
+    id: makeId("REV"),
+    parentId: current.id,
+    createdAt,
+    label: cleanText(`Import ${schema.name}`, 180),
+    digest: await revisionStateDigest(records, config, archiveSchemas, archiveUnits, serviceRecords),
+    records,
+    config,
+    archiveSchemas,
+    archiveUnits,
+    serviceRecords,
+  };
+  const application = await createEvidenceApplicationRecord(authorityRecord, {
+    outcome: "applied",
+    reason: "archive-import-applied",
+    detail: "The reviewed archival schema and records were applied to the named resulting revision as unverified evidence.",
+    resultingRevisionId: revision.id,
+    resultingRevisionDigest: revision.digest,
+  });
+  return appendAudit({
+    ...workspace,
+    updatedAt: createdAt,
+    activeRevisionId: revision.id,
+    revisions: retainRevisions(workspace.revisions, revision),
+    evidenceAuthority: [...(workspace.evidenceAuthority ?? []), authorityRecord],
+    evidenceApplications: [...(workspace.evidenceApplications ?? []), application],
+  }, "Apply archival import as unverified evidence", authorityTarget, "accepted");
 }
 
 export async function upsertServiceRecord(workspace: Workspace, record: ServiceRecord): Promise<Workspace> {
@@ -934,15 +1175,29 @@ export async function renameWorkspace(workspace: Workspace, name: string, action
 export async function prepareLocalWorkspace(workspace: Workspace, name: string): Promise<Workspace> {
   const safeName = cleanWorkspaceName(name);
   const next = { ...structuredClone(workspace), name: safeName, updatedAt: new Date().toISOString() };
-  if (workspace.audit.length >= MAX_AUDIT_EVENTS) return startSuccessorAudit(next, "Create successor workspace", workspace.audit.at(-1)!.hash);
+  if (workspace.audit.length >= MAX_AUDIT_EVENTS) {
+    await requireVerifiedPredecessor(workspace);
+    return startSuccessorAudit(next, "Create successor workspace", workspace.audit.at(-1)!.hash);
+  }
   return appendAudit(next, "Create local workspace", safeName, "accepted");
 }
 
 export async function forkWorkspace(workspace: Workspace, name: string): Promise<Workspace> {
   const safeName = cleanWorkspaceName(name);
   const next = { ...structuredClone(workspace), name: safeName, updatedAt: new Date().toISOString() };
-  if (workspace.audit.length >= MAX_AUDIT_EVENTS) return startSuccessorAudit(next, "Create successor workspace", workspace.audit.at(-1)!.hash);
+  if (workspace.audit.length >= MAX_AUDIT_EVENTS) {
+    await requireVerifiedPredecessor(workspace);
+    return startSuccessorAudit(next, "Create successor workspace", workspace.audit.at(-1)!.hash);
+  }
   return appendAudit(next, "Duplicate workspace", safeName, "accepted");
+}
+
+async function requireVerifiedPredecessor(workspace: Workspace): Promise<void> {
+  try {
+    await validateWorkspaceSnapshot(workspace);
+  } catch {
+    throw new Error("A successor workspace cannot be created because the predecessor snapshot or audit chain failed integrity validation.");
+  }
 }
 
 function startSuccessorAudit(workspace: Workspace, action: string, predecessorHash: string): Promise<Workspace> {
@@ -951,6 +1206,55 @@ function startSuccessorAudit(workspace: Workspace, action: string, predecessorHa
 
 export async function recordWorkspaceAction(workspace: Workspace, action: string, target = "Browser-local workspace"): Promise<Workspace> {
   return appendAudit({ ...workspace, updatedAt: new Date().toISOString() }, cleanText(action, 180), cleanText(target, 180), "accepted");
+}
+
+export async function recordEvidenceDisposition(
+  workspace: Workspace,
+  evidence: EvidenceDescriptorInput,
+  disposition: EvidenceDispositionInput,
+  action: string,
+  application?: EvidenceApplicationInputValue,
+): Promise<Workspace> {
+  const record = await createEvidenceAuthorityRecord(evidence, disposition);
+  if (application) {
+    return appendEvidenceDecisionOutcome(
+      workspace,
+      record,
+      application,
+      action,
+      `evidence:${record.recordSha256} · source:${record.evidence.source.sha256}`,
+      application.outcome === "applied" ? "accepted" : "rejected",
+    );
+  }
+  const next = {
+    ...workspace,
+    updatedAt: disposition.atBrowser,
+    evidenceAuthority: [...(workspace.evidenceAuthority ?? []), record],
+  };
+  return appendAudit(next, cleanText(action, 180), `evidence:${record.recordSha256} · source:${record.evidence.source.sha256}`, disposition.decision === "admit-unverified" ? "accepted" : "rejected");
+}
+
+async function appendEvidenceDecisionOutcome(
+  workspace: Workspace,
+  decision: EvidenceAuthorityRecord,
+  application: EvidenceApplicationInputValue,
+  action: string,
+  target: string,
+  auditOutcome: AuditEvent["outcome"],
+): Promise<Workspace> {
+  if (application.outcome === "applied") {
+    const resultingRevision = workspace.revisions.find((revision) => revision.id === application.resultingRevisionId);
+    if (!resultingRevision || resultingRevision.digest !== application.resultingRevisionDigest) {
+      throw new Error("Applied evidence must bind an existing resulting revision and its exact state digest.");
+    }
+  }
+  const outcome = await createEvidenceApplicationRecord(decision, application);
+  return appendAudit({
+    ...workspace,
+    updatedAt: decision.disposition.atBrowser,
+    evidenceAuthority: [...(workspace.evidenceAuthority ?? []), decision],
+    evidenceApplications: [...(workspace.evidenceApplications ?? []), outcome],
+  }, cleanText(action, 180), cleanText(target, 180), auditOutcome);
 }
 
 export function reviewedSourceAuditTarget(source: ReviewedSource): string {
@@ -971,6 +1275,19 @@ function trustedReviewedSource(source: ReviewedSource): boolean {
     && source.filename.length > 0
     && source.filename.length <= 180
     && auditText(source.filename, 180, "") === source.filename;
+}
+
+function importReviewBinding(review: ImportReview): Promise<string> {
+  return digestValue({
+    filename: review.filename,
+    bytes: review.bytes,
+    digest: review.digest,
+    format: review.format,
+    records: review.records,
+    findings: review.findings,
+    blocked: review.blocked,
+    summary: review.summary,
+  });
 }
 
 function auditText(value: unknown, maximum: number, fallback: string): string {
@@ -1026,13 +1343,24 @@ export async function updateIncident(
   const note = patch.note?.trim();
   if (note && existing.notes.length >= MAX_INCIDENT_NOTES) throw new Error("Incident note capacity reached. Export the record before continuing in a successor workspace.");
   if (patch.state && !["open", "investigating", "monitoring", "resolved"].includes(patch.state)) throw new Error("Incident state is invalid.");
+  const nextState = patch.state ?? existing.state;
+  const nextOwnerRole = patch.ownerRole !== undefined ? cleanText(patch.ownerRole, 100) : existing.ownerRole;
+  const nextAction = patch.nextAction !== undefined ? cleanText(patch.nextAction, 500) : existing.nextAction;
+  const resolving = existing.state !== "resolved" && nextState === "resolved";
+  const revisingResolvedClaim = existing.state === "resolved" && nextState === "resolved"
+    && (nextOwnerRole !== existing.ownerRole || nextAction !== existing.nextAction);
+  if (resolving && !note) throw new Error("Incident resolution requires a contemporaneous closure note describing the evidence checked.");
+  if (revisingResolvedClaim && !note) throw new Error("Changing the owner or closure criterion of a resolved incident requires a contemporaneous note, or reopen the incident first.");
+  if (nextState === "resolved" && (!nextOwnerRole || /^unassigned$/i.test(nextOwnerRole))) throw new Error("Incident resolution requires an assigned owner role.");
+  if (nextState === "resolved" && !nextAction) throw new Error("Incident resolution requires a closure criterion.");
+  if (nextState === "resolved" && !note && !existing.notes.some((item) => item.trim())) throw new Error("A resolved incident requires recorded closure evidence.");
   const incidents = workspace.incidents.map((incident) => {
     if (incident.id !== incidentId) return incident;
     return {
       ...incident,
-      state: patch.state ?? incident.state,
-      ownerRole: patch.ownerRole ? cleanText(patch.ownerRole, 100) : incident.ownerRole,
-      nextAction: patch.nextAction ? cleanText(patch.nextAction, 500) : incident.nextAction,
+      state: nextState,
+      ownerRole: nextOwnerRole,
+      nextAction,
       notes: note ? [...incident.notes, cleanText(note, 2000)] : incident.notes,
       updatedAt: new Date().toISOString(),
     };
@@ -1080,21 +1408,34 @@ export async function createIncidentFromFinding(
 }
 
 
-export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind): string {
+export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind, incidentId?: string): string {
   const revision = activeRevision(workspace);
-  const incident = workspace.incidents.find((item) => item.state !== "resolved") ?? workspace.incidents[0];
+  const incidentBound = kind === "incident-ticket" || kind === "vendor-escalation" || kind === "postmortem";
+  if (incidentBound && !incidentId) throw new Error("Select an incident before generating this incident-bound document.");
+  const incident = incidentId ? workspace.incidents.find((item) => item.id === incidentId) : undefined;
+  if (incidentBound && !incident) throw new Error("The selected incident is no longer present in this workspace.");
+  if (incidentBound && incident?.state === "resolved") {
+    if (!incident.notes.some((note) => note.trim())) throw new Error("This resolved incident lacks closure evidence. Reopen it or record an activity or closure note before generating an operational document.");
+    if (!incident.ownerRole.trim() || /^unassigned$/i.test(incident.ownerRole.trim())) throw new Error("This resolved incident lacks an assigned owner. Reopen it or assign an owner role before generating an operational document.");
+    if (!incident.nextAction.trim()) throw new Error("This resolved incident lacks a closure criterion. Reopen it or record the criterion before generating an operational document.");
+  }
   const md = markdownInline;
+  const incidentNotes = incident?.notes.length ? incident.notes.map((item) => `- ${md(item)}`) : ["- No activity or closure notes are recorded."];
   const common = [
     `Document: ${md(DOCUMENT_OPTIONS.find((option) => option.value === kind)?.label ?? kind)}`,
-    `Owner: Systems administration`,
+    "Draft status: requires institutional review before operational reliance or circulation",
+    "Document review owner role: Unassigned — assign through the institution's authoritative process",
     `Workspace: ${md(workspace.name)}`,
     `Revision: ${md(revision.id)}`,
-    `Last verified: ${md(workspace.updatedAt)}`,
+    `Workspace updated (browser clock; not trusted time): ${md(workspace.updatedAt)}`,
+    "Evidence scope: This document reflects content present in this workspace; it does not establish that the workspace is complete, authentic, authoritative, or current in the system of record.",
     "",
   ];
   const sections: Record<DocumentKind, string[]> = {
     "system-inventory": [
       "# System inventory",
+      "",
+      "Baseline control template: these rows do not establish that a component is deployed, configured, tested, authoritative, or present. Reconcile every row with the institution's authoritative inventory before reliance.",
       "",
       "| Component | Purpose | Dependency | Recovery evidence |",
       "| --- | --- | --- | --- |",
@@ -1103,7 +1444,7 @@ export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind
       "| Discovery | Search, facets, visibility | Normalized records | Record and count checks |",
       "| Resolver | OpenURL target construction | Resolver and proxy configuration | Controlled link check |",
       "| Fulfillment | Availability and request state | Holding, item, location, policy | Synthetic request trace |",
-      "| Named local workspace | Catalog, archives, service registers, incidents, revisions, and audit | Explicit save with verified current and prior generations | Digest verification, plaintext workspace backup, and reversible restore |",
+      "| Named local workspace | Catalog, archives, service registers, incidents, revisions, and audit | Explicit save with internally validated, manifest-digest-bound current and prior generations | Digest verification, plaintext workspace backup, and reversible restore |",
     ],
     "configuration-register": [
       "# Configuration register",
@@ -1129,8 +1470,11 @@ export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind
       "## Evidence",
       ...incident.evidence.map((item) => `- ${md(item)}`),
       "",
-      "## Next action",
+      `## ${incident.state === "resolved" ? "Closure criterion" : "Next action"}`,
       md(incident.nextAction),
+      "",
+      `## ${incident.state === "resolved" ? "Closure evidence and activity notes" : "Activity notes"}`,
+      ...incidentNotes,
     ] : ["# Incident ticket", "", "No incident selected."],
     "vendor-escalation": incident ? [
       `# Vendor escalation — ${md(incident.id)}`,
@@ -1142,8 +1486,13 @@ export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind
       "## Evidence supplied",
       ...incident.evidence.map((item) => `- ${md(item)}`),
       "",
+      "## Activity and closure notes",
+      ...incidentNotes,
+      "",
       "## Requested response",
-      "Confirm the authoritative target or configuration, identify any recent change, and provide a correction or documented workaround. No patron data is included.",
+      "Confirm the authoritative target or configuration, identify any recent change, and provide a correction or documented workaround.",
+      "",
+      "Disclosure review: Review every supplied evidence and note value for patron, personal, confidential, or contract-restricted data before sending. This document does not determine that those data are absent.",
     ] : ["# Vendor escalation", "", "No incident selected."],
     "change-request": [
       "# Change request",
@@ -1167,6 +1516,11 @@ export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind
     "postmortem": incident ? [
       `# Postmortem — ${md(incident.id)}`,
       "",
+      `- State: ${md(incident.state)}`,
+      `- Severity: ${md(incident.severity)}`,
+      `- Owner role: ${md(incident.ownerRole)}`,
+      ...(incident.state === "resolved" ? [] : ["", `Status warning: This incident remains ${md(incident.state)}; this draft is not closure evidence and must not be treated as a completed postmortem.`]),
+      "",
       "## Impact",
       md(incident.title),
       "",
@@ -1178,6 +1532,9 @@ export function makeOperationalDocument(workspace: Workspace, kind: DocumentKind
       "",
       "## Recovery",
       md(incident.nextAction),
+      "",
+      `## ${incident.state === "resolved" ? "Closure evidence and activity notes" : "Activity notes"}`,
+      ...incidentNotes,
       "",
       "## Follow-up",
       "Assign an owner role, a verification date, and a regression check for each accepted action.",
@@ -1263,7 +1620,8 @@ export function exportPacket(workspace: Workspace): string {
 export async function verifyAudit(workspace: Workspace): Promise<boolean> {
   if (!workspace.audit.length) return false;
   let previousHash = "GENESIS";
-  for (const event of workspace.audit) {
+  for (const [index, event] of workspace.audit.entries()) {
+    if (event.sequence !== index + 1) return false;
     if (event.previousHash !== previousHash) return false;
     const hash = await digestValue({
       sequence: event.sequence,
@@ -1288,7 +1646,7 @@ export async function verifyAudit(workspace: Workspace): Promise<boolean> {
 export async function validateWorkspaceSnapshot(value: unknown): Promise<Workspace> {
   inspectJson(value, 0);
   const root = asObject(value, "Saved workspace must be an object.");
-  exactKeys(root, ["schema", "version", "name", "createdAt", "updatedAt", "activeRevisionId", "revisions", "incidents", "audit"]);
+  exactKeys(root, ["schema", "version", "name", "createdAt", "updatedAt", "activeRevisionId", "revisions", "incidents", "evidenceAuthority", "evidenceApplications", "audit"]);
   if (root.schema !== LAB_SCHEMA || root.version !== LAB_VERSION) throw new Error("Saved workspace version is unsupported.");
   if (cleanWorkspaceName(readString(root.name, 120, "workspace name")) !== root.name) throw new Error("Workspace name is not in canonical form.");
   readDate(root.createdAt, "createdAt");
@@ -1297,16 +1655,18 @@ export async function validateWorkspaceSnapshot(value: unknown): Promise<Workspa
 
   if (!Array.isArray(root.revisions) || root.revisions.length < 1 || root.revisions.length > 20) throw new Error("Saved workspace must contain 1–20 revisions.");
   const revisionIds = new Set<string>();
+  let previousRevisionId: string | null = null;
   for (const [index, valueRevision] of root.revisions.entries()) {
     const revision = asObject(valueRevision, `Revision ${index + 1} must be an object.`);
     exactKeys(revision, ["id", "parentId", "createdAt", "label", "digest", "records", "config", "archiveSchemas", "archiveUnits", "serviceRecords"]);
     const id = readString(revision.id, 128, "revision id");
     if (!SAFE_ID.test(id) || revisionIds.has(id)) throw new Error("Revision ID is invalid or duplicated.");
-    if (revision.parentId !== null) {
-      const parentId = readString(revision.parentId, 128, "parent revision");
-      if (index > 0 && !revisionIds.has(parentId)) throw new Error("Revision parent is missing or out of order.");
-    }
+    const parentId = revision.parentId === null ? null : readString(revision.parentId, 128, "parent revision");
+    if (parentId !== previousRevisionId) throw new Error(index === 0
+      ? "The first retained revision must begin the retained revision lineage."
+      : "Each retained revision must name the immediately preceding retained revision as its parent.");
     revisionIds.add(id);
+    previousRevisionId = id;
     readDate(revision.createdAt, "revision createdAt");
     readString(revision.label, 180, "revision label");
     const digest = readString(revision.digest, 64, "revision digest");
@@ -1335,6 +1695,7 @@ export async function validateWorkspaceSnapshot(value: unknown): Promise<Workspa
     if (digest !== expectedDigest) throw new Error("Revision content digest does not match its stored state.");
   }
   if (!revisionIds.has(activeId)) throw new Error("Saved workspace has no active revision.");
+  if (activeId !== previousRevisionId) throw new Error("The active revision must be the last retained revision.");
 
   if (!Array.isArray(root.incidents) || root.incidents.length > MAX_INCIDENTS) throw new Error("Incident limit exceeded.");
   const incidentIds = new Set<string>();
@@ -1357,6 +1718,39 @@ export async function validateWorkspaceSnapshot(value: unknown): Promise<Workspa
     readString(incident.nextAction, 500, "nextAction");
     readBoolean(incident.synthetic, "synthetic");
   });
+
+  const evidenceByRecordDigest = new Map<string, EvidenceAuthorityRecord>();
+  if (root.evidenceAuthority !== undefined) {
+    if (!Array.isArray(root.evidenceAuthority) || root.evidenceAuthority.length > 5_000) throw new Error("Evidence authority record limit exceeded.");
+    for (const item of root.evidenceAuthority) {
+      const record = await validateEvidenceAuthorityRecord(item);
+      if (evidenceByRecordDigest.has(record.recordSha256)) throw new Error("Evidence authority records must not be duplicated.");
+      evidenceByRecordDigest.set(record.recordSha256, record);
+    }
+  }
+
+  if (root.evidenceApplications !== undefined) {
+    if (!Array.isArray(root.evidenceApplications) || root.evidenceApplications.length > 5_000) throw new Error("Evidence application record limit exceeded.");
+    const applicationDigests = new Set<string>();
+    const appliedDecisions = new Set<string>();
+    for (const item of root.evidenceApplications) {
+      const application = await validateEvidenceApplicationRecord(item);
+      if (applicationDigests.has(application.recordSha256) || appliedDecisions.has(application.decisionRecordSha256)) {
+        throw new Error("Evidence application records and decision links must be unique.");
+      }
+      const decision = evidenceByRecordDigest.get(application.decisionRecordSha256);
+      if (!decision) throw new Error("Evidence application outcome is not linked to an evidence decision.");
+      validateEvidenceApplicationLink(decision, application);
+      if (application.outcome === "applied") {
+        const retainedRevision = (root.revisions as Revision[]).find((revision) => revision.id === application.resultingRevisionId);
+        if (retainedRevision && retainedRevision.digest !== application.resultingRevisionDigest) {
+          throw new Error("Evidence application resulting revision digest does not match the retained revision.");
+        }
+      }
+      applicationDigests.add(application.recordSha256);
+      appliedDecisions.add(application.decisionRecordSha256);
+    }
+  }
 
   if (!Array.isArray(root.audit) || root.audit.length < 1 || root.audit.length > MAX_AUDIT_EVENTS) throw new Error(`Saved workspace must contain 1–${MAX_AUDIT_EVENTS.toLocaleString()} audit events.`);
   root.audit.forEach((item, index) => {
@@ -1500,6 +1894,8 @@ function workspaceStateValue(workspace: Workspace) {
     activeRevisionId: workspace.activeRevisionId,
     revisions: workspace.revisions,
     incidents: workspace.incidents,
+    ...(workspace.evidenceAuthority !== undefined ? { evidenceAuthority: workspace.evidenceAuthority } : {}),
+    ...(workspace.evidenceApplications !== undefined ? { evidenceApplications: workspace.evidenceApplications } : {}),
   };
 }
 
@@ -1513,15 +1909,16 @@ function isJsonLd(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(isJsonLd);
   const item = value as Record<string, unknown>;
-  return "@context" in item || "@graph" in item || "@type" in item;
+  return "@context" in item || "@graph" in item;
 }
 
 type ImportedRecord = Partial<Omit<CatalogRecord, "source" | "metadata">> & { metadata?: Partial<DescriptiveMetadata> };
 
 function importedRecord(value: ImportedRecord, sourceFormat: Exclude<SourceFormat, "fixture">, label: string, digest: string, ordinal: number, elements: RecordElement[]): CatalogRecord {
   const fallback = `${sourceFormat.toUpperCase()}-${digest.slice(0, 12)}-${ordinal}`;
-  const candidate = cleanText(value.id || fallback, 128);
-  const id = SAFE_ID.test(candidate) ? candidate : fallback;
+  const suppliedId = value.id === undefined ? "" : cleanText(value.id, 128);
+  if (suppliedId && !SAFE_ID.test(suppliedId)) throw new Error(`Record ${ordinal} has an unsafe primary identifier.`);
+  const id = suppliedId || fallback;
   const creators = value.creators ?? [];
   const contributors = value.contributors ?? [];
   const identifiers = value.identifiers ?? [];
@@ -1564,35 +1961,183 @@ function parseCslJson(value: unknown, label: string, digest: string): CatalogRec
   if (!list.length || list.length > MAX_RECORDS) throw new Error("CSL-JSON must contain 1–1,000 items.");
   return list.map((raw, index) => {
     const item = asObject(raw, `CSL item ${index + 1} must be an object.`);
+    assertNoJsonLdCarriersInCsl(item, index + 1);
+    assertCanonicalCslIdentityKeys(item, index + 1);
     const names = (key: string) => Array.isArray(item[key]) ? (item[key] as unknown[]).map((entry) => { const name = asObject(entry, "CSL names must be objects."); return cleanText([name.literal, name.family, name.given].filter((part) => typeof part === "string").join(name.literal ? "" : name.family && name.given ? ", " : ""), 512); }) : [];
     const issued = cslDate(item.issued);
     const identifiers: Identifier[] = [];
-    for (const [key, scheme] of [["DOI", "doi"], ["ISBN", "isbn"], ["ISSN", "issn"], ["PMID", "local"]] as const) if (typeof item[key] === "string" && item[key].trim()) identifiers.push({ scheme, value: cleanText(item[key] as string, 256) });
+    for (const [key, scheme] of [["DOI", "doi"], ["ISBN", "isbn"], ["ISSN", "issn"], ["PMID", "local"]] as const) {
+      if (item[key] === undefined) continue;
+      if (typeof item[key] !== "string" || !item[key].trim()) throw new Error(`CSL item ${index + 1} ${key} must be nonempty text when supplied.`);
+      identifiers.push({ scheme, value: cleanText(item[key] as string, 256) });
+    }
+    if (item.URL !== undefined && (typeof item.URL !== "string" || !item.URL.trim())) throw new Error(`CSL item ${index + 1} URL must be nonempty text when supplied.`);
     const url = typeof item.URL === "string" ? cleanText(item.URL, 2048) : "";
+    if (url) assertIdentityText(url, `CSL item ${index + 1} URL`);
+    const suppliedId = cslPrimaryId(item.id, index + 1);
     const elements = Object.entries(item).map(([key, entry]) => sourceElement(key, entry)).filter((entry): entry is RecordElement => Boolean(entry));
-    return importedRecord({ id: typeof item.id === "string" ? item.id : undefined, title: typeof item.title === "string" ? item.title : "", creators: names("author"), contributors: [...names("editor"), ...names("translator")], format: exactRecordFormat(toArray(item.genre).map(entityName)) ?? formatFromCsl(String(item.type ?? ""), Boolean(url)), identifiers, links: url ? [url] : [], year: issued.slice(0, 4), metadata: { issued, publisher: textValue(item.publisher), place: textValue(item["publisher-place"]), language: textValue(item.language), abstract: textValue(item.abstract), subjects: typeof item.keyword === "string" ? splitList(item.keyword) : [], containerTitle: textValue(item["container-title"]), volume: textValue(item.volume), issue: textValue(item.issue), pages: textValue(item.page) } }, "csl-json", label, digest, index + 1, elements);
+    return importedRecord({ id: suppliedId, title: typeof item.title === "string" ? item.title : "", creators: names("author"), contributors: [...names("editor"), ...names("translator")], format: exactRecordFormat(toArray(item.genre).map(entityName)) ?? formatFromCsl(String(item.type ?? ""), Boolean(url)), identifiers, links: url ? [url] : [], year: issued.slice(0, 4), metadata: { issued, publisher: textValue(item.publisher), place: textValue(item["publisher-place"]), language: textValue(item.language), abstract: textValue(item.abstract), subjects: typeof item.keyword === "string" ? splitList(item.keyword) : [], containerTitle: textValue(item["container-title"]), volume: textValue(item.volume), issue: textValue(item.issue), pages: textValue(item.page) } }, "csl-json", label, digest, index + 1, elements);
   });
+}
+
+function assertCanonicalCslIdentityKeys(item: Record<string, unknown>, ordinal: number): void {
+  const canonical = ["id", "DOI", "ISBN", "ISSN", "PMID", "URL"];
+  assertCanonicalIdentityKeys(item, canonical, `CSL item ${ordinal}`);
+}
+
+function assertNoJsonLdCarriersInCsl(value: unknown, ordinal: number): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => assertNoJsonLdCarriersInCsl(entry, ordinal));
+    return;
+  }
+  const item = value as Record<string, unknown>;
+  const jsonLdCarriers = ["@context", "@graph", "@id", "identifier"];
+  for (const key of Object.keys(item)) {
+    if (containsUnicodeFormatControl(key)) throw new Error(`CSL item ${ordinal} contains a property name with unsupported Unicode format or bidirectional controls.`);
+    const alias = canonicalIdentityKey(key, jsonLdCarriers);
+    if (alias) throw new Error(`CSL item ${ordinal} contains JSON-LD declaration or identity key ${key}; ${alias} is not accepted in CSL-JSON.`);
+  }
+  Object.values(item).forEach((entry) => assertNoJsonLdCarriersInCsl(entry, ordinal));
+}
+
+function cslPrimaryId(value: unknown, ordinal: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") {
+    if (!value.trim()) throw new Error(`CSL item ${ordinal} id must be nonempty when supplied.`);
+    return value;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  throw new Error(`CSL item ${ordinal} id must be nonempty text or a nonnegative safe integer.`);
 }
 
 function parseJsonLd(value: unknown, label: string, digest: string): CatalogRecord[] {
   const root = Array.isArray(value) ? value : asObject(value, "JSON-LD root must be an object.");
+  const graphRoot = !Array.isArray(root) && Object.hasOwn(root, "@graph") ? root : null;
+  assertCanonicalIdentityKeysDeep(root, ["@context", "@graph", "@id", "identifier", "url"], "JSON-LD");
+  if (!Array.isArray(root) && Object.hasOwn(root, "@graph") && !Array.isArray(root["@graph"])) {
+    throw new Error("JSON-LD @graph must be an array when supplied.");
+  }
+  if (graphRoot) exactKeys(graphRoot, ["@context", "@graph"]);
+  assertNoNestedJsonLdGraphs(root, graphRoot);
   const list = Array.isArray(root) ? root : Array.isArray(root["@graph"]) ? root["@graph"] as unknown[] : [root];
   if (!list.length || list.length > MAX_RECORDS) throw new Error("JSON-LD must contain 1–1,000 resources.");
+  validateJsonLdContext(root, list);
   return list.map((raw, index) => {
     const item = asObject(raw, `JSON-LD resource ${index + 1} must be an object.`);
+    assertCanonicalIdentityKeys(item, ["@context", "@graph", "@id", "identifier", "url"], `JSON-LD resource ${index + 1}`);
     const names = (key: string) => toArray(item[key]).map((entry) => typeof entry === "string" ? entry : textValue(asObject(entry, "JSON-LD name must be text or an object.").name)).filter(Boolean);
     const links = toArray(item.url).map((entry) => {
-      if (typeof entry === "string") return cleanText(entry, 2048);
+      if (typeof entry === "string") {
+        const link = cleanText(entry, 2048);
+        assertIdentityText(link, "JSON-LD URL");
+        return link;
+      }
       const link = asObject(entry, "JSON-LD URL values must be text or objects with @id.");
+      assertCanonicalIdentityKeys(link, ["@id"], "JSON-LD URL object");
+      exactKeys(link, ["@id"]);
       if (typeof link["@id"] !== "string") throw new Error("JSON-LD URL objects require a text @id.");
-      return cleanText(link["@id"], 2048);
+      const identity = cleanText(link["@id"], 2048);
+      assertIdentityText(identity, "JSON-LD URL object @id");
+      return identity;
     });
-    if (typeof item["@id"] === "string" && /^https:\/\//i.test(item["@id"])) links.push(cleanText(item["@id"], 2048));
+    const nativeId = jsonLdPrimaryId(item["@id"], index + 1, links);
     const identifiers = parseLooseIdentifiers(item.identifier);
-    const nativeId = typeof item["@id"] === "string" && item["@id"].startsWith("urn:in-keeping:") ? cleanText(item["@id"].slice("urn:in-keeping:".length), 128) : "";
     const elements = Object.entries(item).map(([key, entry]) => sourceElement(key, entry)).filter((entry): entry is RecordElement => Boolean(entry));
-    return importedRecord({ id: nativeId || identifierValue(item.identifier) || textValue(item["@id"]), title: textValue(item.name) || textValue(item.headline), creators: names("author"), contributors: names("contributor"), format: exactRecordFormat(toArray(item.additionalType).map(entityName)) ?? formatFromSchema(textValue(item["@type"]), Boolean(links.length)), identifiers, links, year: textValue(item.datePublished).slice(0, 4), metadata: { issued: textValue(item.datePublished), created: textValue(item.dateCreated), modified: textValue(item.dateModified), publisher: entityName(item.publisher), language: textValue(item.inLanguage), subjects: toArray(item.keywords ?? item.about).map(entityName).filter(Boolean), abstract: textValue(item.description), rights: textValue(item.copyrightNotice), license: typeof item.license === "string" ? item.license : "" } }, "jsonld", label, digest, index + 1, elements);
+    return importedRecord({ id: nativeId, title: textValue(item.name) || textValue(item.headline), creators: names("author"), contributors: names("contributor"), format: exactRecordFormat(toArray(item.additionalType).map(entityName)) ?? formatFromSchema(textValue(item["@type"]), Boolean(links.length)), identifiers, links, year: textValue(item.datePublished).slice(0, 4), metadata: { issued: textValue(item.datePublished), created: textValue(item.dateCreated), modified: textValue(item.dateModified), publisher: entityName(item.publisher), language: textValue(item.inLanguage), subjects: toArray(item.keywords ?? item.about).map(entityName).filter(Boolean), abstract: textValue(item.description), rights: textValue(item.copyrightNotice), license: typeof item.license === "string" ? item.license : "" } }, "jsonld", label, digest, index + 1, elements);
   });
+}
+
+function canonicalIdentityKey(key: string, canonical: readonly string[]): string | undefined {
+  const skeleton = key.normalize("NFKC").replace(/\p{Cf}/gu, "").toLowerCase();
+  return canonical.find((candidate) => candidate.toLowerCase() === skeleton);
+}
+
+function assertCanonicalIdentityKeys(item: Record<string, unknown>, canonical: readonly string[], label: string): void {
+  for (const key of Object.keys(item)) {
+    if (containsUnicodeFormatControl(key)) throw new Error(`${label} contains a property name with unsupported Unicode format or bidirectional controls.`);
+    const alias = canonicalIdentityKey(key, canonical);
+    if (alias && key !== alias) throw new Error(`${label} uses deceptive identity or declaration key ${key}; use the canonical ${alias} key.`);
+  }
+}
+
+function assertCanonicalIdentityKeysDeep(value: unknown, canonical: readonly string[], label: string): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => assertCanonicalIdentityKeysDeep(entry, canonical, label));
+    return;
+  }
+  const item = value as Record<string, unknown>;
+  assertCanonicalIdentityKeys(item, canonical, label);
+  Object.values(item).forEach((entry) => assertCanonicalIdentityKeysDeep(entry, canonical, label));
+}
+
+function assertNoNestedJsonLdGraphs(value: unknown, allowedRoot: Record<string, unknown> | null): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => assertNoNestedJsonLdGraphs(entry, allowedRoot));
+    return;
+  }
+  const item = value as Record<string, unknown>;
+  if (item !== allowedRoot && Object.hasOwn(item, "@graph")) throw new Error("Nested JSON-LD @graph declarations are not accepted.");
+  Object.values(item).forEach((entry) => assertNoNestedJsonLdGraphs(entry, allowedRoot));
+}
+
+function validateJsonLdContext(root: unknown[] | Record<string, unknown>, list: unknown[]): void {
+  const accepted = new Set(["https://schema.org", "https://schema.org/"]);
+  const requireContext = (value: unknown, label: string): void => {
+    const item = asObject(value, `${label} must be an object.`);
+    if (typeof item["@context"] !== "string" || !accepted.has(item["@context"] as string)) {
+      throw new Error(`${label} must declare the supported https://schema.org JSON-LD context; object, array, aliased, and remote contexts are not accepted.`);
+    }
+  };
+  if (Array.isArray(root)) {
+    root.forEach((item, index) => requireContext(item, `JSON-LD resource ${index + 1}`));
+  } else {
+    requireContext(root, "JSON-LD root");
+    if (Array.isArray(root["@graph"])) {
+      for (const [index, raw] of list.entries()) {
+        const item = asObject(raw, `JSON-LD resource ${index + 1} must be an object.`);
+        if (Object.hasOwn(item, "@context")) throw new Error(`JSON-LD resource ${index + 1} may not override the root context.`);
+      }
+    }
+  }
+  const allowedContexts = new Set<object>(Array.isArray(root) ? root.filter((item): item is object => Boolean(item) && typeof item === "object") : [root]);
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (!allowedContexts.has(value as object) && Object.hasOwn(value as object, "@context")) throw new Error("Nested JSON-LD context overrides are not accepted.");
+    if (Array.isArray(value)) value.forEach(visit);
+    else Object.values(value as Record<string, unknown>).forEach(visit);
+  };
+  visit(root);
+}
+
+function jsonLdPrimaryId(value: unknown, ordinal: number, links: string[]): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`JSON-LD resource ${ordinal} @id must be nonempty text when supplied.`);
+  const cleaned = cleanText(value, 2048);
+  assertIdentityText(cleaned, `JSON-LD resource ${ordinal} @id`);
+  const native = nativeIdentityPayload(cleaned, `JSON-LD resource ${ordinal} @id`);
+  if (native !== null) return native;
+  if (/^https:\/\//i.test(cleaned)) {
+    links.push(cleaned);
+    return undefined;
+  }
+  throw new Error(`JSON-LD resource ${ordinal} @id must be an IN KEEPING identity URN or a public HTTPS IRI.`);
+}
+
+function nativeIdentityPayload(value: string, label: string): string | null {
+  assertIdentityText(value, label);
+  const match = value.match(/^urn:in-keeping:(.*)$/i);
+  if (!match) {
+    if (/^urn:in-keeping:/i.test(value.normalize("NFKC"))) {
+      throw new Error(`${label} uses a Unicode lookalike for the IN KEEPING identity wrapper.`);
+    }
+    return null;
+  }
+  const payload = cleanText(match[1], 128);
+  if (!payload || !SAFE_ID.test(payload)) throw new Error(`${label} contains an empty or unsafe IN KEEPING identity.`);
+  return payload;
 }
 
 function* sourceLines(text: string): Generator<{ line: string; lineNumber: number; terminal: boolean }> {
@@ -1652,6 +2197,15 @@ function parseRis(text: string, label: string, digest: string): CatalogRecord[] 
     if (chunk[0].line.slice(0, 2) !== "TY" || (map.get("TY")?.length ?? 0) !== 1 || !map.get("TY")?.[0]) {
       throw new Error(`RIS record ${index + 1} must begin with exactly one nonempty TY field.`);
     }
+    const sourceIds = map.get("ID") ?? [];
+    if (sourceIds.length > 1) throw new Error(`RIS record ${index + 1} contains contradictory duplicate singular ID fields.`);
+    if (sourceIds.length === 1) assertIdentityText(sourceIds[0], `RIS record ${index + 1} ID`);
+    for (const tag of ["DO", "SN"] as const) {
+      for (const value of map.get(tag) ?? []) {
+        if (!value) throw new Error(`RIS record ${index + 1} ${tag} values must be nonempty when supplied.`);
+        assertIdentityText(value, `RIS record ${index + 1} ${tag}`);
+      }
+    }
     const first = (key: string) => map.get(key)?.[0] ?? "";
     const identifiers: Identifier[] = [
       ...(map.get("DO") ?? []).map((value) => ({ scheme: "doi" as const, value })),
@@ -1686,8 +2240,9 @@ function parseBibtexSource(text: string): ParsedBibtexEntry[] {
     while (index < text.length) {
       if (/\s/.test(text[index])) { index += 1; continue; }
       if (text[index] === "%") {
-        const newline = text.indexOf("\n", index + 1);
-        index = newline === -1 ? text.length : newline + 1;
+        while (index < text.length && text[index] !== "\n" && text[index] !== "\r") index += 1;
+        if (text[index] === "\r" && text[index + 1] === "\n") index += 2;
+        else if (index < text.length) index += 1;
         continue;
       }
       break;
@@ -1864,8 +2419,21 @@ function parseMarcText(text: string, label: string, digest: string): CatalogReco
     const values = (tag: string, code: string) => (map.get(tag) ?? []).flatMap((field) => field.subfields.get(code) ?? []);
     const fields = (tag: string) => map.get(tag) ?? [];
     const control = (tag: string) => map.get(tag)?.[0]?.value ?? "";
+    for (const tag of ["001", "003"]) {
+      const occurrences = fields(tag);
+      if (occurrences.length > 1) throw new Error(`MARC mnemonic record ${index + 1} contains duplicate singular ${tag} control fields.`);
+      if (occurrences.length === 1) assertIdentityText(occurrences[0].value, `MARC mnemonic record ${index + 1} ${tag}`);
+    }
+    for (const tag of ["020", "022", "024"]) {
+      for (const field of fields(tag)) {
+        if ((field.subfields.get("a")?.length ?? 0) > 1) throw new Error(`MARC mnemonic record ${index + 1} ${tag} contains repeated nonrepeatable $a within one field.`);
+        if (tag === "024" && (field.subfields.get("2")?.length ?? 0) > 1) throw new Error(`MARC mnemonic record ${index + 1} 024 contains repeated nonrepeatable $2 within one field.`);
+        for (const value of field.subfields.get("a") ?? []) assertIdentityText(value, `MARC mnemonic record ${index + 1} ${tag} $a`);
+        if (tag === "024") for (const value of field.subfields.get("2") ?? []) assertIdentityText(value, `MARC mnemonic record ${index + 1} 024 $2`);
+      }
+    }
     const leader = control("LDR");
-    const trace = { "LDR/06": leader[6] ?? "", "LDR/07": leader[7] ?? "", "336$b": values("336", "b")[0] ?? "", "337$b": values("337", "b")[0] ?? "", "338$b": values("338", "b")[0] ?? "", "999$a": values("999", "a")[0] ?? "" };
+    const trace = { "001": control("001"), "003": control("003"), "LDR/06": leader[6] ?? "", "LDR/07": leader[7] ?? "", "336$b": values("336", "b")[0] ?? "", "337$b": values("337", "b")[0] ?? "", "338$b": values("338", "b")[0] ?? "", "999$a": values("999", "a")[0] ?? "" };
     const links = values("856", "u");
     const additionalNames = ["700", "720"].flatMap((tag) => fields(tag)).map((field) => ({ name: field.subfields.get("a")?.[0] ?? "", role: (field.subfields.get("e")?.[0] ?? "").toLowerCase() })).filter((entry) => entry.name);
     const identifiers: Identifier[] = [
@@ -1901,7 +2469,7 @@ function parseMarcMnemonicDataField(body: string, recordNumber: number, lineNumb
     if (source[index] !== "$") throw new Error(`MARC mnemonic record ${recordNumber}, line ${lineNumber} has malformed subfield data.`);
     index += 1;
     const code = source[index++];
-    if (!/^[A-Za-z0-9]$/.test(code ?? "")) throw new Error(`MARC mnemonic record ${recordNumber}, line ${lineNumber} has an invalid subfield code.`);
+    if (!/^[a-z0-9]$/.test(code ?? "")) throw new Error(`MARC mnemonic record ${recordNumber}, line ${lineNumber} has an invalid subfield code.`);
     let value = "";
     while (index < source.length && source[index] !== "$") {
       if (source[index] === "\\" && (source[index + 1] === "$" || source[index + 1] === "\\")) {
@@ -1920,8 +2488,7 @@ function parseMarcMnemonicDataField(body: string, recordNumber: number, lineNumb
   return { indicators, entries, subfields };
 }
 
-function parseJsonPacket(text: string, label: string, digest: string): CatalogRecord[] {
-  const parsed: unknown = JSON.parse(text);
+function parseJsonPacket(parsed: unknown, label: string, digest: string): CatalogRecord[] {
   inspectJson(parsed, 0);
   const root = asObject(parsed, "Packet must be an object.");
   exactKeys(root, ["schema", "version", "kind", "provenance", "records"]);
@@ -2081,7 +2648,9 @@ function parseIdentifier(value: unknown): Identifier {
   exactKeys(item, ["scheme", "value"]);
   const schemes = ["doi", "isbn", "issn", "oclc", "lccn", "orcid", "ismn", "upc", "uri", "local"];
   if (!schemes.includes(String(item.scheme))) throw new Error("Identifier scheme is unsupported.");
-  return { scheme: item.scheme as Identifier["scheme"], value: readString(item.value, 256, "identifier") };
+  const identifier = readString(item.value, 256, "identifier");
+  assertIdentityText(identifier, "Identifier value");
+  return { scheme: item.scheme as Identifier["scheme"], value: identifier };
 }
 
 function parseMarcXml(document: Document, label: string, digest: string): CatalogRecord[] {
@@ -2133,6 +2702,11 @@ function parseMarcXml(document: Document, label: string, digest: string): Catalo
       if (field.hasAttribute("xml:space") && field.getAttribute("xml:space") !== "preserve") throw new Error(`MARC record ${index + 1} control field has invalid xml:space.`);
       if (!/^00[1-9]$/.test(field.getAttribute("tag") ?? "") || childElements(field).length) throw new Error(`MARC record ${index + 1} contains an invalid control field.`);
     }
+    for (const tag of ["001", "003"]) {
+      const occurrences = controlFields.filter((field) => field.getAttribute("tag") === tag);
+      if (occurrences.length > 1) throw new Error(`MARC record ${index + 1} contains duplicate singular ${tag} control fields.`);
+      if (occurrences.length === 1) assertIdentityText(occurrences[0].textContent ?? "", `MARC record ${index + 1} ${tag}`);
+    }
     for (const field of fields) {
       assertElementOnlyContent(field, `MARC record ${index + 1} data field`);
       assertOnlyXmlAttributes(field, ["id", "tag", "ind1", "ind2"]);
@@ -2140,8 +2714,22 @@ function parseMarcXml(document: Document, label: string, digest: string): Catalo
       const tag = field.getAttribute("tag") ?? "";
       if (!/^\d{3}$/.test(tag) || Number(tag) < 10 || !/^[\x20-\x7e]$/.test(field.getAttribute("ind1") ?? "") || !/^[\x20-\x7e]$/.test(field.getAttribute("ind2") ?? "")) throw new Error(`MARC record ${index + 1} contains an invalid data field.`);
       const directSubfields = childElements(field);
-      if (!directSubfields.length || directSubfields.some((child) => child.namespaceURI !== MARCXML_NS || child.localName !== "subfield" || !onlyXmlAttributes(child, ["id", "code"]) || !/^[A-Za-z0-9]$/.test(child.getAttribute("code") ?? "") || childElements(child).length)) throw new Error(`MARC record ${index + 1} contains an invalid subfield or empty data field.`);
+      if (!directSubfields.length || directSubfields.some((child) => child.namespaceURI !== MARCXML_NS || child.localName !== "subfield" || !onlyXmlAttributes(child, ["id", "code"]) || !/^[a-z0-9]$/.test(child.getAttribute("code") ?? "") || childElements(child).length)) throw new Error(`MARC record ${index + 1} contains an invalid subfield or empty data field.`);
       directSubfields.forEach((child) => assertUniqueMarcXmlId(child, xmlIds));
+      if (["020", "022", "024"].includes(tag) && directSubfields.filter((child) => child.getAttribute("code") === "a").length > 1) {
+        throw new Error(`MARC record ${index + 1} ${tag} contains repeated nonrepeatable $a within one field.`);
+      }
+      if (tag === "024" && directSubfields.filter((child) => child.getAttribute("code") === "2").length > 1) {
+        throw new Error(`MARC record ${index + 1} 024 contains repeated nonrepeatable $2 within one field.`);
+      }
+      if (["020", "022", "024"].includes(tag)) {
+        directSubfields.filter((child) => child.getAttribute("code") === "a")
+          .forEach((child) => assertIdentityText(child.textContent ?? "", `MARC record ${index + 1} ${tag} $a`));
+      }
+      if (tag === "024") {
+        directSubfields.filter((child) => child.getAttribute("code") === "2")
+          .forEach((child) => assertIdentityText(child.textContent ?? "", `MARC record ${index + 1} 024 $2`));
+      }
     }
     const control = (tag: string) => controlFields.find((node) => node.getAttribute("tag") === tag)?.textContent?.trim() ?? "";
     const values = (tag: string, code: string) => fields.filter((field) => field.getAttribute("tag") === tag).flatMap((field) => directElements(field, MARCXML_NS, "subfield").filter((node) => node.getAttribute("code") === code).map((node) => cleanText(node.textContent ?? "", 8192))).filter(Boolean);
@@ -2156,6 +2744,8 @@ function parseMarcXml(document: Document, label: string, digest: string): Catalo
       }),
     ];
     const trace = {
+      "001": control("001"),
+      "003": control("003"),
       "LDR/06": leader[6] ?? "",
       "LDR/07": leader[7] ?? "",
       "336$b": values("336", "b")[0] ?? "",
@@ -2241,10 +2831,13 @@ function parseDcXml(document: Document, label: string, digest: string): CatalogR
   }
   const values = (root: Element, name: string) => directElements(root, DC_ELEMENTS_NS, name).map((node) => cleanText(node.textContent ?? "", 8192)).filter(Boolean);
   return roots.map((root, index) => {
-    const identifiers = values(root, "identifier");
+    const identifiers = directElements(root, DC_ELEMENTS_NS, "identifier").map((node) => cleanText(node.textContent ?? "", 8192));
+    identifiers.forEach((value) => assertIdentityText(value, `Dublin Core record ${index + 1} identifier`));
+    const classifiedIdentifiers = identifiers.map((value) => ({ value, native: nativeIdentityPayload(value, `Dublin Core record ${index + 1} identifier`) }));
+    const nativeIdentifiers = classifiedIdentifiers.filter((entry) => entry.native !== null);
+    if (nativeIdentifiers.length > 1) throw new Error(`Dublin Core record ${index + 1} contains duplicate private IN KEEPING identity wrappers.`);
     const links = identifiers.filter((value) => /^https?:\/\//i.test(value));
-    const nativeIdValue = identifiers.find((value) => value.startsWith("urn:in-keeping:"));
-    const typedIdentifiers: Identifier[] = identifiers.filter((value) => !/^https?:\/\//i.test(value) && value !== nativeIdValue).map((value) => {
+    const typedIdentifiers: Identifier[] = classifiedIdentifiers.filter((entry) => !/^https?:\/\//i.test(entry.value) && entry.native === null).map(({ value }) => {
       const typed = value.match(/^([A-Za-z]+):(.*)$/);
       if (typed?.[2]) return { scheme: identifierScheme(typed[1]), value: cleanText(typed[2], 256) };
       if (/^10\.\d{4,9}\//i.test(value)) return { scheme: "doi", value };
@@ -2259,7 +2852,7 @@ function parseDcXml(document: Document, label: string, digest: string): CatalogR
       return element(`dc:${name}`, dcElementName(name), cleanText(node.textContent ?? "", 8192), dcElementDefinition(name));
     });
     const parsed = importedRecord({
-      id: nativeIdValue ? cleanText(nativeIdValue.slice("urn:in-keeping:".length), 128) : typedIdentifiers[0]?.value || `DC-${digest.slice(0, 12)}-${index + 1}`,
+      id: nativeIdentifiers[0]?.native ?? undefined,
       title: values(root, "title")[0] ?? "",
       creators: values(root, "creator"),
       contributors: values(root, "contributor"),
@@ -2292,6 +2885,12 @@ function parseModsXml(document: Document, label: string, digest: string): Catalo
   return roots.map((root, index) => {
     if (root.getElementsByTagNameNS(MODS_NS, "extension").length) throw new Error(`MODS record ${index + 1} contains an extension element whose schema is not accepted.`);
     assertModsStructure(root, index + 1);
+    const recordInfos = directElements(root, MODS_NS, "recordInfo");
+    if (recordInfos.length > 1) throw new Error(`MODS record ${index + 1} contains duplicate singular recordInfo elements.`);
+    const recordIdentifierNodes = recordInfos.flatMap((node) => directElements(node, MODS_NS, "recordIdentifier"));
+    const recordIdentifierValues = recordIdentifierNodes.map((node) => cleanText(node.textContent ?? "", 128));
+    recordIdentifierValues.forEach((value) => assertIdentityText(value, `MODS record ${index + 1} recordIdentifier`));
+    if (new Set(recordIdentifierValues).size > 1) throw new Error(`MODS record ${index + 1} contains contradictory recordIdentifier values.`);
     const values = (...path: string[]) => pathElements(root, MODS_NS, path).map((node) => cleanText(node.textContent ?? "", 8192)).filter(Boolean);
     const names = directElements(root, MODS_NS, "name");
     const creatorNames: string[] = [], contributorNames: string[] = [];
@@ -2320,14 +2919,16 @@ function parseModsXml(document: Document, label: string, digest: string): Catalo
     const primaryTitleInfo = titleInfos.find((node) => !node.hasAttribute("type") || node.getAttribute("type") === "primary") ?? titleInfos[0];
     const title = primaryTitleInfo ? directElements(primaryTitleInfo, MODS_NS, "title").map((node) => cleanText(node.textContent ?? "", 8192)).filter(Boolean)[0] ?? "" : "";
     const elements = [
-      ...directElements(root, MODS_NS).map((node) => element(`mods:${node.localName}`, modsElementName(node.localName), cleanText(node.textContent ?? "", 8192), "A MODS descriptive metadata element retained for review.")),
+      ...directElements(root, MODS_NS).flatMap((node) => node.localName === "recordInfo"
+        ? directElements(node, MODS_NS).map((child) => element(`mods:recordInfo/${child.localName}`, modsElementName(child.localName), cleanText(child.textContent ?? "", 8192), "A MODS record-information element retained separately for identity review."))
+        : [element(`mods:${node.localName}`, modsElementName(node.localName), cleanText(node.textContent ?? "", 8192), "A MODS descriptive metadata element retained for review.")]),
       ...modsAttributeElements(root),
     ];
     const issued = values("originInfo", "dateIssued")[0] ?? "";
     const accessConditions = directElements(root, MODS_NS, "accessCondition");
     const rights = accessConditions.find((node) => (node.getAttribute("type") ?? "").toLowerCase() !== "license")?.textContent ?? "";
     const license = accessConditions.find((node) => (node.getAttribute("type") ?? "").toLowerCase() === "license")?.textContent ?? "";
-    return importedRecord({ id: values("recordInfo", "recordIdentifier")[0] || identifiers[0]?.value, title, creators: creatorNames, contributors: contributorNames, year: issued.slice(0, 4), format: declaredFormat ?? formatFromMods(typeText, allGenreText, Boolean(links.length)), identifiers, links, edition: values("originInfo", "edition")[0] ?? "", location: values("location", "shelfLocator")[0] ?? (links.length ? "Online" : ""), metadata: { issued, created: values("originInfo", "dateCreated")[0] ?? "", modified: values("recordInfo", "recordChangeDate")[0] ?? "", publisher: values("originInfo", "publisher")[0] ?? "", place: values("originInfo", "place", "placeTerm")[0] ?? "", language: values("language", "languageTerm")[0] ?? "", subjects: [...values("subject", "topic"), ...values("subject", "geographic")], genres: genreText, abstract: values("abstract")[0] ?? "", rights: cleanText(rights, 8192), license: cleanText(license, 8192), series: series[0] ?? "", extent: values("physicalDescription", "extent")[0] ?? "", audience: values("targetAudience")[0] ?? "", notes: values("note") } }, "modsxml", label, digest, index + 1, elements);
+    return importedRecord({ id: recordIdentifierValues[0], title, creators: creatorNames, contributors: contributorNames, year: issued.slice(0, 4), format: declaredFormat ?? formatFromMods(typeText, allGenreText, Boolean(links.length)), identifiers, links, edition: values("originInfo", "edition")[0] ?? "", location: values("location", "shelfLocator")[0] ?? (links.length ? "Online" : ""), metadata: { issued, created: values("originInfo", "dateCreated")[0] ?? "", modified: values("recordInfo", "recordChangeDate")[0] ?? "", publisher: values("originInfo", "publisher")[0] ?? "", place: values("originInfo", "place", "placeTerm")[0] ?? "", language: values("language", "languageTerm")[0] ?? "", subjects: [...values("subject", "topic"), ...values("subject", "geographic")], genres: genreText, abstract: values("abstract")[0] ?? "", rights: cleanText(rights, 8192), license: cleanText(license, 8192), series: series[0] ?? "", extent: values("physicalDescription", "extent")[0] ?? "", audience: values("targetAudience")[0] ?? "", notes: values("note") } }, "modsxml", label, digest, index + 1, elements);
   });
 }
 
@@ -2593,7 +3194,7 @@ function decodeVersionedTabularCell(value: string, delimiter: "," | "\t"): strin
 function parseVersionedTabularList(value: string | undefined, field: string): string[] {
   if (!value) return [];
   let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw new Error(`Versioned tabular ${field} must be a JSON array.`); }
+  try { parsed = assertSafeJsonText(value); } catch (error) { throw new Error(`Versioned tabular ${field} must be a safe JSON array. ${safeError(error)}`, { cause: error }); }
   if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) throw new Error(`Versioned tabular ${field} must be an array of text values.`);
   return parsed.map((entry) => cleanText(entry as string, 1024));
 }
@@ -2601,7 +3202,7 @@ function parseVersionedTabularList(value: string | undefined, field: string): st
 function parseVersionedTabularIdentifiers(value: string | undefined): Identifier[] {
   if (!value) return [];
   let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw new Error("Versioned tabular identifiers must be a JSON array."); }
+  try { parsed = assertSafeJsonText(value); } catch (error) { throw new Error(`Versioned tabular identifiers must be a safe JSON array. ${safeError(error)}`, { cause: error }); }
   if (!Array.isArray(parsed)) throw new Error("Versioned tabular identifiers must be an array.");
   if (parsed.length > 50) throw new Error("A record exceeds 50 identifiers.");
   return parsed.map(parseIdentifier);
@@ -2623,18 +3224,33 @@ function parseLooseIdentifiers(value: unknown): Identifier[] {
   const entries = toArray(value);
   if (entries.length > 50) throw new Error("A record exceeds 50 identifiers.");
   return entries.flatMap((entry) => {
-    if (typeof entry === "string") return [{ scheme: /^https:\/\//i.test(entry) ? "uri" as const : "local" as const, value: cleanText(entry, 256) }];
+    if (typeof entry === "string") {
+      const raw = cleanText(entry, 256);
+      assertIdentityText(raw, "JSON-LD identifier text");
+      if (nativeIdentityPayload(raw, "JSON-LD identifier") !== null) throw new Error("IN KEEPING identity URNs are accepted only in JSON-LD @id, not general identifier values.");
+      return [{ scheme: /^https:\/\//i.test(raw) ? "uri" as const : "local" as const, value: raw }];
+    }
     const item = asObject(entry, "Identifier must be text or an object.");
-    const raw = textValue(item.value) || textValue(item["@value"]); if (!raw) return [];
-    return [{ scheme: identifierScheme(textValue(item.propertyID) || textValue(item.type)), value: cleanText(raw, 256) }];
+    assertCanonicalIdentityKeys(item, ["@type", "value", "@value", "propertyID", "type"], "JSON-LD identifier object");
+    exactKeys(item, ["@type", "value", "@value", "propertyID", "type"]);
+    if (Object.hasOwn(item, "@type") && item["@type"] !== "PropertyValue") throw new Error("JSON-LD identifier object @type must be PropertyValue when supplied.");
+    const hasValue = Object.hasOwn(item, "value");
+    const hasJsonLdValue = Object.hasOwn(item, "@value");
+    if (hasValue === hasJsonLdValue) throw new Error("JSON-LD identifier objects require exactly one of value or @value.");
+    const rawValue = hasValue ? item.value : item["@value"];
+    if (typeof rawValue !== "string" || !rawValue.trim()) throw new Error("JSON-LD identifier object values must be nonempty text.");
+    const raw = cleanText(rawValue, 256);
+    assertIdentityText(raw, "JSON-LD identifier object value");
+    if (nativeIdentityPayload(raw, "JSON-LD identifier") !== null) throw new Error("IN KEEPING identity URNs are accepted only in JSON-LD @id, not general identifier values.");
+    const hasPropertyId = Object.hasOwn(item, "propertyID");
+    const hasType = Object.hasOwn(item, "type");
+    if (hasPropertyId && hasType) throw new Error("JSON-LD identifier objects may not supply both propertyID and type identity schemes.");
+    const schemeValue = hasPropertyId ? item.propertyID : hasType ? item.type : "";
+    if ((hasPropertyId || hasType) && (typeof schemeValue !== "string" || !schemeValue.trim())) throw new Error("JSON-LD identifier scheme must be nonempty text when supplied.");
+    const scheme = typeof schemeValue === "string" ? cleanText(schemeValue, 64) : "";
+    if (scheme) assertIdentityText(scheme, "JSON-LD identifier scheme");
+    return [{ scheme: identifierScheme(scheme), value: raw }];
   });
-}
-
-function identifierValue(value: unknown): string {
-  const first = toArray(value)[0];
-  if (typeof first === "string") return first;
-  if (first && typeof first === "object") return textValue((first as Record<string, unknown>).value);
-  return "";
 }
 
 function entityName(value: unknown): string {
@@ -2807,7 +3423,7 @@ function validatePublicUrl(value: string, allowTemplate = false): { ok: boolean;
 
 function normalizeIdentifier(identifier: Identifier): string {
   let value = identifier.value.trim();
-  if (identifier.scheme === "doi") value = value.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").toLowerCase();
+  if (identifier.scheme === "doi") value = value.replace(/^doi:\s*/i, "").replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").toLowerCase();
   if (identifier.scheme === "isbn" || identifier.scheme === "issn") value = value.replace(/[^0-9Xx]/g, "").toUpperCase();
   return value;
 }

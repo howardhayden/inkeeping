@@ -33,6 +33,7 @@ const requiredDocuments = [
   "docs/THREAT_MODEL.md",
   "docs/PRIVACY_AND_DATA_GOVERNANCE.md",
   "docs/RISK_REGISTER.md",
+  "docs/RED_TEAM_REGISTER.md",
   "docs/ACCESSIBILITY.md",
   "docs/TESTING.md",
   "docs/VALIDATION_REPORT.md",
@@ -104,6 +105,10 @@ test("governing documentation records the implemented hostile-import controls pr
   assert.match(traceability, /RIS-001/);
   assert.match(traceability, /MARC-001/);
   assert.match(traceability, /BIB-001/);
+  assert.match(traceability, /JSON-001/);
+  assert.match(traceability, /EVID-001/);
+  assert.match(traceability, /AUD-003/);
+  assert.match(traceability, /UI-FRESH-001/);
   assert.match(traceability, /UI-PAGE-001/);
   assert.match(traceability, /BAK-001/);
   assert.match(standards, /no official EAD XSD files and no test that invokes an external XSD validator/i);
@@ -118,4 +123,44 @@ test("backup and interface language disclose plaintext without reviving discarde
   assert.match(backups, /plaintext-json-not-encrypted/);
   assert.match(allDocs, /plaintext-json-not-encrypted/);
   assert.doesNotMatch(ui, /Private by default · No telemetry|Session active in memory|Not saved locally|BROWSER-LOCAL DATA|Blank workspace ready|Revision REV-/);
+});
+
+test("repository licensing and red-team evidence do not make contradictory authority claims", async () => {
+  const readme = await readFile(path.join(projectRoot, "README.md"), "utf8");
+  const contributing = await readFile(path.join(projectRoot, "CONTRIBUTING.md"), "utf8");
+  const licensing = await readFile(path.join(projectRoot, "LICENSING.md"), "utf8");
+  const register = await readFile(path.join(projectRoot, "docs/RED_TEAM_REGISTER.md"), "utf8");
+  const historicalValidation = await readFile(path.join(projectRoot, "docs/VALIDATION_REPORT.md"), "utf8");
+
+  assert.match(readme, /source-available for noncommercial use/i);
+  assert.doesNotMatch(readme, /released under the \[MIT License\]/i);
+  assert.match(licensing, /original software.*PolyForm-Noncommercial-1\.0\.0/is);
+  assert.doesNotMatch(contributing, /Software and mixed source files follow the MIT License/i);
+  assert.doesNotMatch(contributing, /standalone documentation follows CC BY-SA 4\.0/i);
+  assert.match(register, /integrity is not authenticity/i);
+  assert.match(register, /Reproduced failure or unsafe ambiguity.*Enforced constraint and implementation.*Evidence/is);
+  assert.match(register, /Focused verified.*not the complete engineering suite/is);
+  assert.match(register, /RT-AUTH-001.*recomputing hashes.*wholesale record\/history replacement/is);
+  assert.match(register, /RT-SEM-001.*operator-admitted-unverified/is);
+  assert.match(register, /RT-FRESH-001.*reopens.*rechecks/is);
+  assert.doesNotMatch(register, /RT-PARSE-00[1-5]\s*\|\s*\*\*Open/i);
+  assert.match(historicalValidation, /Historical candidate-specific evidence.*not current working-tree proof/is);
+  assert.match(historicalValidation, /139 tests, 139 passed/);
+});
+
+test("governing docs preserve continuity, evidence, and click-time trust boundaries", async () => {
+  const architecture = await readFile(path.join(projectRoot, "docs/ARCHITECTURE.md"), "utf8");
+  const dataModel = await readFile(path.join(projectRoot, "docs/DATA_MODEL.md"), "utf8");
+  const security = await readFile(path.join(projectRoot, "docs/SECURITY.md"), "utf8");
+
+  assert.match(architecture, /IndexedDB v3/i);
+  assert.match(dataModel, /workspace-continuity-anchors/);
+  assert.match(dataModel, /in-keeping\/evidence-application-outcome/);
+  assert.match(dataModel, /resultingRevisionId.*resultingRevisionDigest/is);
+  assert.match(security, /unsigned exact-checkpoint receipt/i);
+  assert.match(security, /ordinary output requires the exact current receipt.*continuity-corroborated/is);
+  assert.match(architecture, /reset ledger.*cannot advance the same anchor/i);
+  assert.match(security, /no local state is named trusted, verified, authenticated, or authoritative/i);
+  assert.match(security, /reopens\/rechecks the complete fingerprint(?: and same receipt)? immediately before synchronous Blob\/anchor activation/i);
+  assert.match(security, /file activation cannot be one atomic transaction/i);
 });

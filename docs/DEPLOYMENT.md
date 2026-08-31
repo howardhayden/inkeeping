@@ -172,8 +172,13 @@ Verify:
 3. Browser developer tools show only same-origin static asset requests; no application API, analytics, remote font, or imported URL request occurs.
 4. `wrangler.jsonc` remains binding-free and `observability.enabled` remains false.
 5. The built `robots.txt` and `sitemap.xml` contain `https://inkeep.ing`.
-6. Import, review, apply, explicit save, backup download, report download, and recovery work with synthetic records in a disposable browser profile.
-7. No test workspace is treated as migratable production data.
+6. Import, review, apply, explicit save, continuity-checkpoint acceptance/receipt comparison, backup download, report download, and recovery work with synthetic records in a disposable browser profile.
+7. In two same-origin tabs, delay or suppress the ordinary cross-tab notification, change the named generation before each authoritative whole-catalog/per-record catalog/archive/service/operational/Public Notice action, and repeat during a maximum representative report build. The action must reopen the exact saved generation, reject token/recovery/state/audit/revision/continuity/evidence disagreement, and activate no file.
+8. From a clean accepted generation, confirm authoritative content is rendered from the reopened saved snapshot and survives the post-construction recheck. Confirm the Technical Report remains a clearly labeled diagnostic of the open session when that session is stale, unsaved, or unattached.
+9. Confirm each supported browser actually opens or saves the requested file after the asynchronous double-open check; record popup or automatic-download blocking, retry behavior, filename, and file digest. An anchor click alone is not evidence of a durable file.
+10. No test workspace is treated as migratable production data.
+
+The freshness lease and browser file activation are not one atomic transaction. Another context may commit immediately after the final read, and a generated file may therefore become stale immediately after it was verified. The recorded result establishes correspondence to the exact saved generation at the check instants; it does not establish that the file remains latest when later imported, approved, or published.
 
 ## 4. Prepare browser data for the origin cutover
 

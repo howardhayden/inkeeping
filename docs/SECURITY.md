@@ -7,9 +7,13 @@ This document defines the security properties of the current IN KEEPING implemen
 Primary implementation references:
 
 - [`app/lab-core.ts`](../app/lab-core.ts): catalog quarantine, canonical validation, revisions, incidents, state digests, and linked audit events.
+- [`app/json-safety.ts`](../app/json-safety.ts): raw duplicate-member and Unicode-scalar JSON quarantine.
 - [`app/xml-safety.ts`](../app/xml-safety.ts): pre-DOM XML structural scan and namespace policy.
 - [`app/archival-schemas.ts`](../app/archival-schemas.ts): archival schema, EAD, and archival CSV quarantine.
-- [`app/lab-storage.ts`](../app/lab-storage.ts): IndexedDB manifests, generations, optimistic tokens, bounded inspection, and reconstruction.
+- [`app/continuity-anchor.ts`](../app/continuity-anchor.ts): local continuity checkpoints and unsigned exact-state receipts.
+- [`app/evidence-authority.ts`](../app/evidence-authority.ts): exact non-authoritative evidence dispositions.
+- [`app/output-freshness.ts`](../app/output-freshness.ts): click-time named-save verification and final artifact recheck.
+- [`app/lab-storage.ts`](../app/lab-storage.ts): IndexedDB manifests, generations, continuity anchors, optimistic tokens, bounded inspection, and reconstruction.
 - [`app/workspace-backups.ts`](../app/workspace-backups.ts): workspace-backup envelope and review.
 - [`app/public-url.ts`](../app/public-url.ts): non-fetching public-HTTPS validation.
 - [`security-headers.ts`](../security-headers.ts), [`public/_headers`](../public/_headers), and [`wrangler.jsonc`](../wrangler.jsonc): response and hosting policy.
@@ -26,9 +30,11 @@ There is no application authentication or authorization layer. Access is inherit
 
 ## Hostile-import lifecycle
 
-Catalog and archival imports are untrusted until an operator explicitly applies a successful review. Review is non-mutating. A catalog apply revalidates the review's file name, digest, format, canonical record shapes, findings, identifiers, and destination capacity. An archival apply likewise binds the reviewed digest, format, file name, schema, records, and complete-set invariants. A failure leaves the active revision unchanged and records the rejected action when the operation reaches the workspace layer.
+Catalog, archival, and backup inputs remain unverified after structural review. Review is non-mutating. Consumption requires the same successful in-memory review instance with an unchanged binding over every decision field; cloned, mutated, or coherently substituted review objects are rejected. It also requires an explicit `admit-unverified`, `reject`, or `withdraw` disposition with claimed origin, custody note, role claim, rationale, policy reference, browser-observed time, and the fixed `browser-clock-untrusted` basis. No field is defaulted and no local state is named trusted, verified, authenticated, or authoritative.
 
-The interface presents source evidence and normalized output as two complete record blocks, **Original input** and **New output**, with accessible element definitions. This supports human review; it does not make misleading but structurally valid metadata trustworthy.
+A catalog apply revalidates the file name, digest, format, canonical record shapes, findings, identifiers, and destination capacity. An archival apply likewise rechecks the reviewed digest, format, file name, schema, records, and complete-set invariants. Each disposition binds the exact source bytes/digest, parser profile, canonical reviewed payload, and entity scope. A linked application record preserves applied/not-applied, a source-specific reason, and the exact resulting revision ID/state digest when applied. Reject, withdraw, destination conflict, and capacity refusal therefore remain recorded without adding reviewed content. All human claims can still be fabricated together, and a later withdrawal cannot erase or rehabilitate retained active content. Ordinary outward artifacts fail closed on active admitted evidence and on unattributed catalog/archive/service content. Removed/superseded entities end the active barrier but do not erase historical decisions. Technical Reports and plaintext backups remain diagnostic paths. External governed corroboration is required before authoritative reliance.
+
+Catalog review presents source evidence and normalized output as two complete record blocks, **Original input** and **New output**, with accessible element definitions. Archive and service models do not retain a distinct per-record source version; report views name their **Entered active values** and **Canonical active record** instead. These views support human review; they do not make misleading but structurally valid metadata trustworthy.
 
 ### File admission
 
@@ -39,7 +45,7 @@ Catalog admission in `reviewImport` enforces extension/MIME agreement, nonzero s
 - Archival imports are limited to 5 MiB for EAD XML, supported archival CSV, and archive-schema packages.
 - Workspace-backup review has a separate 26 MiB envelope limit derived from the 25 MiB local-workspace limit plus envelope allowance.
 
-JSON is byte-bounded before `JSON.parse`, then walked with depth, string, array, object-key, forbidden-key, and exact DTO checks. It is not a streaming JSON parser. XML receives the structural scan described below before DOM construction.
+Operator-supplied catalog JSON, archive schema packages, workspace backups, continuity receipts, and embedded JSON arrays/objects in versioned CSV/TSV cells are scanned before semantic parsing. The scan rejects duplicate decoded member names—including escape-equivalent spellings—and unpaired Unicode surrogates in keys or values before `JSON.parse` can discard or mutate them. Parsed values then receive depth, string, array, object-key, forbidden-key, and exact DTO checks. This is not a streaming JSON parser. XML receives the structural scan described below before DOM construction.
 
 ### XML before DOM construction
 
@@ -85,19 +91,25 @@ RIS is parsed as tagged records rather than by filtering lines. Every nonblank s
 5. rejects leading blank lines, blank lines inside a record, repeated blank separators, untagged lines, duplicate `TY`, missing terminators, and empty records; and
 6. retains at most 1,024 evidence elements, including the `ER` terminator.
 
-LF and CRLF input are accepted. A final line ending is not treated as an extra record. Malformed lines are not skipped.
+LF and CRLF input are accepted. A final line ending is not treated as an extra record. Malformed lines are not skipped. `ID` is a singular primary identity carrier; `DO` and `SN` remain repeatable evidence.
 
 ### MARC mnemonic grammar
 
 MARC mnemonic input is parsed line by line. Each record begins with exactly one structurally valid, 24-character `=LDR  ` line. Every following line must match `=(LDR|three digits)`, two spaces, and a body. Control and data fields, indicators, subfield codes, delimiters, and escaped literal `$`/`\` characters are validated. A new `=LDR` can start the next record directly; alternatively, one blank line can separate records. Leading blanks, repeated blank separators, lines before a leader, malformed lines, invalid leaders, invalid indicators, text before the first subfield, and invalid subfield codes reject the import. Lines are not filtered or discarded.
 
-One control/leader value or one data-field subfield consumes one retained evidence element. A record above 1,024 retained evidence elements is rejected.
+One control/leader value or one data-field subfield consumes one retained evidence element. A record above 1,024 retained evidence elements is rejected. MARC mnemonic and MARCXML permit at most one `001` and one `003`. Repeatable `020`, `022`, and `024` fields remain legal, but each occurrence permits at most one `$a`, and each `024` at most one `$2`.
 
 ### Bounded BibTeX profile
 
 The BibTeX parser implements a deliberately limited, non-executable grammar, not the full BibTeX language. It accepts braced values, quoted values, and numeric literals; tracks nested braces to 64 levels; and caps each decoded field at 8,192 characters, entries at 1,000, and fields at 1,022 per entry. Entry type and citation key consume the remaining two positions in the 1,024-element evidence budget.
 
-The parser rejects `@string`, `@preamble`, and `@comment` directives; value macros; `#` concatenation; duplicate fields; missing citation keys; unsafe citation keys; malformed delimiters; unbalanced values; and unexpected text. Percent line comments outside values are skipped. Operators must resolve macros and concatenation before import.
+The parser rejects `@string`, `@preamble`, and `@comment` directives; value macros; `#` concatenation; duplicate fields; missing citation keys; unsafe citation keys; malformed delimiters; unbalanced values; and unexpected text. Percent line comments outside values terminate consistently on CR, LF, or CRLF. Operators must resolve macros and concatenation before import.
+
+### Source identity cardinality
+
+Format-defined singular identity carriers fail closed rather than using first-value, last-value, or concatenation behavior. In addition to RIS and MARC rules above, MODS permits one `recordInfo`; its nonempty `recordIdentifier` values must agree, although exact duplicates remain visible evidence. Dublin Core permits at most one case-insensitive private `urn:in-keeping:` primary wrapper while ordinary identifiers remain repeatable. EAD permits one repository carrier per description and exactly one legacy repository `name`/`corpname`; EAD3 multipart name parts remain repeatable and are joined canonically.
+
+JSON-LD accepts only the exact Schema.org string contexts, prohibits nested or graph-item context overrides, separates public `@id` links from local IN KEEPING identity URNs, and requires an identifier object to supply one value carrier and at most one nonempty scheme carrier. CSL dispatch is extension- and structure-bound; canonical identity keys and their accepted types are enforced, and normalization-lookalike aliases reject. These are syntactic ambiguity controls, not entity resolution or institutional authority control. Conflicting real-world identifiers can still require external reconciliation.
 
 ### Delimited and spreadsheet output
 
@@ -113,7 +125,7 @@ Imported and configured URLs are syntax-checked without a network request. Only 
 
 ### Explicit persistence
 
-A working copy starts in memory. IndexedDB persistence begins only after an operator creates a named workspace or explicitly opens and saves a reviewed copy. A normal save validates the complete snapshot and audit chain, performs bounded serialization, enforces the 25 MiB payload ceiling, requests a quota estimate when available, calculates SHA-256, checks an optimistic concurrency token, and writes the generation and manifest in one IndexedDB transaction.
+A working copy starts in memory. IndexedDB persistence begins only after an operator creates a named workspace or explicitly opens and saves a reviewed copy. A normal save validates the complete snapshot and audit chain, performs bounded serialization, enforces the 25 MiB payload ceiling, requests a quota estimate when available, and calculates SHA-256. Before opening the write transaction, it re-reads and internally validates the manifest-bound active generation and the prior generation that rotation would delete. If a local continuity anchor exists, the base must match it and the new audit must contain the complete anchored ledger as an exact prefix. A reset ledger that only names the prior hash cannot advance that anchor; rollover requires a new workspace/lineage and explicit baseline. Inside the transaction it rechecks the optimistic concurrency token and anchor, then writes the new generation, manifest, and advanced anchor atomically. A failed base, digest, token, or anchor check leaves the stored generations and anchor in place.
 
 Normal workspace creation is capped at 50 named workspaces. Storage inspection separately stops above 100 manifest rows or 256 generation keys. A stored workspace walk stops above 25 MiB, 1,000,000 nodes, depth 18, 5,000 values in one array, 256 fields in one object, or 8,192 characters in one text value.
 
@@ -121,9 +133,15 @@ Normal workspace creation is capped at 50 named workspaces. Storage inspection s
 
 After a normal save, the manifest names the active generation and at most one prior generation and binds the SHA-256 payload digest of each. Opening the active generation requires its serialized bytes to agree with both the generation's own digest and the manifest's active digest, followed by complete snapshot, revision, archive, service, and audit validation.
 
-If the active generation and manifest digest disagree, opening stops; no fallback is silently selected. A prior generation can open only when it is present, its manifest digest exists, its bytes match both stored and manifest digests, and the full snapshot validates. It opens as an unsaved recovery copy. Opening does not rewrite or delete either generation.
+If the active generation and manifest digest disagree, opening stops; no fallback is silently selected. A prior generation can open only when it is present, its manifest digest exists, its bytes match both stored and manifest digests, and the full snapshot validates. It opens as an unsaved recovery copy. Opening does not rewrite or delete either generation. Saving back into that slot first confirms the active remains invalid without a digest disagreement, revalidates the fallback, requires the submitted workspace to match it byte for byte, and rechecks the token and recovery generation inside the write transaction.
 
 SHA-256 here detects inconsistent local representations. It is unkeyed and provides no confidentiality, identity, authority, custody, trusted time, or resistance to an actor who can rewrite the payload and all related digests.
+
+### Local continuity checkpoints and receipts
+
+An unanchored named workspace cannot produce ordinary outward artifacts. Baseline creation is explicit, requires bounded acceptance fields, and requires acknowledgment that continuity does not establish authenticity. The v1 anchor binds workspace and lineage IDs, generation, exact saved payload digest, audit genesis and terminal hashes, terminal state digest, event count, and predecessor-ledger reference. A present mismatch reports `continuity-failure`; the application does not silently replace the anchor or re-anchor that lineage in place.
+
+This defeats regeneration of the workspace and its internal hashes only while the separately stored local anchor remains unchanged. The anchor is in the same origin-scoped IndexedDB and therefore the same device/attacker domain. A capable actor can replace the manifest, generations, and anchor together. The application can export an unsigned exact-checkpoint receipt; receipt creation reads those stores in one readonly transaction. Comparing an independently held unchanged receipt detects such co-replacement, but the application cannot prove that storage was independent. The receipt is not a signature, authenticated identity, trusted timestamp, transparency log, custody record, completeness proof, or authority grant. Ordinary output requires the exact current receipt to yield `continuity-corroborated` on both click-time reads. Every save advances the anchor; save, rename, and reload clear the supplied-receipt proof, so a fresh receipt must be retained and compared for each current generation.
 
 ### Quarantine and reconstruction
 
@@ -139,15 +157,15 @@ Workspace backup version 2 requires this exact envelope marker:
 "protection": "plaintext-json-not-encrypted"
 ```
 
-Review rejects a missing or different marker, unexpected envelope fields, invalid UTF-8, unsafe keys, excessive structure, malformed time, unsupported version, digest mismatch, or invalid workspace state. A legacy version-1 envelope can still be reviewed for continuity, but it has no v2 protection marker.
+Review rejects a missing or different marker, unexpected or duplicate decoded fields, invalid UTF-8 or Unicode scalar values, unsafe keys, excessive structure, malformed time, unsupported version, digest mismatch, or invalid workspace state. The UI opens only the exact unchanged successful in-memory review and an explicit admit-unverified disposition; a cloned, mutated, substituted, rejected, or withdrawn review does not replace the session. Opening appends a new outer evidence record for the backup itself, so internally consistent nested claims are not silently elevated. A legacy version-1 envelope can still be reviewed for continuity, but it has no v2 protection marker.
 
-The marker is a disclosure, not a cryptographic control. Both IndexedDB content and downloaded backups are plaintext. Once downloaded, a backup is outside application deletion, encryption, access-control, and retention mechanisms.
+The marker is a disclosure, not a cryptographic control. Both IndexedDB content and downloaded backups are plaintext. A backup contains the bounded workspace payload, including its internal evidence records and audit ledger; it excludes IndexedDB manifests/generations, optimistic tokens, the local continuity anchor, and downloaded receipts. Restore on a clean device/origin is therefore a new unanchored local lineage, not cryptographic continuation of the old anchor. Once downloaded, a backup or receipt is outside application deletion, encryption, access-control, and retention mechanisms.
 
 ## Revisions and linked audit events
 
 Each revision stores a digest of its catalog, configuration, archival, and service-register state. Each audit event includes bounded event fields, the previous event hash, and a digest binding the current non-audit workspace state. Full snapshot validation checks revision digests, event sequence, hash links, event hashes, and the latest state binding.
 
-The chain is an internal consistency mechanism. It is not a digital signature or external transparency log. The application has no user identity proof, role authorization, trusted timestamp, remote anchor, or nonrepudiation. An actor able to rewrite browser storage can construct a new internally consistent workspace. A validly truncated tail can be indistinguishable when the retained preceding event binds the same state. The fixed role text `Local operator` is descriptive, not authenticated identity.
+The chain is an internal consistency mechanism. It is not a digital signature or external transparency log. The application has no user identity proof, role authorization, trusted timestamp, remote signing/transparency service, or nonrepudiation. A matching local continuity checkpoint exposes a rewritten workspace while that checkpoint remains unchanged; an actor able to rewrite every browser-local store can construct a new internally consistent workspace and anchor. An independently held unsigned receipt supplies a comparison point, not authentication. Failed or unsaved attempts not incorporated into a checkpoint can still disappear. The fixed role text `Local operator` and every evidence actor-role field are claims, not authenticated identities.
 
 The application retains at most 20 revision bodies and 5,000 audit events. Those capacity limits are not a records-retention schedule.
 
@@ -155,9 +173,13 @@ The application retains at most 20 revision bodies and 5,000 audit events. Those
 
 The production response policy sets a restrictive CSP, `Referrer-Policy: no-referrer`, MIME sniffing protection, frame denial, same-origin opener/resource policy, origin agent clustering, DNS-prefetch disablement, a permissions policy, and one-year HSTS without `includeSubDomains` or preload. Hashed static assets are cacheable; HTML is `no-cache`.
 
-Generated Technical Report and Public Notice files are static HTML with embedded fonts and styles. Their own CSP uses `default-src 'none'`, `script-src 'none'`, `connect-src 'none'`, and denies frames, objects, forms, and base URLs. They contain no scripts or remote resources. They are still plaintext files and may contain sensitive operational data, particularly the Technical Report.
+Generated Technical Report and Public Notice files are static HTML with embedded fonts and styles. Their own CSP uses `default-src 'none'`, `script-src 'none'`, `connect-src 'none'`, and denies frames, objects, forms, and base URLs. They contain no scripts or remote resources. They are still plaintext files and may contain sensitive operational data, particularly the Technical Report. The Technical Report renders active state plus revision/audit indexes; it is not a complete historical record and does not establish authenticity or evidentiary completeness.
 
-The Public Notice is a fixed projection of nonsynthetic open-incident service categories. It excludes workspace name, raw evidence, notes, catalog/archive/service records, configuration, hashes, and staff-role values. Sample incidents block public-notice generation. Human approval remains necessary before publication.
+Every authoritative UI artifact path requires a named, clean, non-recovery session; reopens the exact saved generation with the process-local exact receipt; requires `continuity-corroborated`; checks token, payload/state digest, audit head, active revision, anchor digest, and active evidence state; renders from that reopened snapshot; and reopens/rechecks the complete fingerprint and same receipt immediately before synchronous Blob/anchor activation. Delayed or missing cross-tab notification—and an unverified React status value—cannot authorize freshness. Technical Reports intentionally render the open session as a diagnostic artifact while the UI supplies a live current/stale/unsaved/not-saved label. Direct low-level serializers and report functions remain transformers, not authorization boundaries.
+
+IndexedDB reads and browser file activation cannot be one atomic transaction. Another process can commit immediately after the final read; an artifact proves only correspondence at the verification instants, not later currency, approval, authenticity, or successful browser/OS persistence. Previously downloaded files receive no revocation or ongoing freshness signal.
+
+The Public Notice is a fixed projection of nonsynthetic open-incident service categories. It excludes workspace name, raw evidence, notes, catalog/archive/service records, configuration, hashes, and staff-role values. Any synthetic incident blocks public-notice generation, including a resolved one. Human approval remains necessary before publication.
 
 ## Dependency and release controls
 

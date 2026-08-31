@@ -98,11 +98,16 @@ Required fixture families are:
 5. all 10 archival record types and 16 archival field kinds;
 6. all 16 service record definitions across eight areas and every service field kind;
 7. exact maximum and first-over-limit cases for security-relevant bounds;
-8. malformed and namespace-confused XML, JSON/prototype, RIS, MARC mnemonic, BibTeX, and tabular cases;
+8. malformed and namespace-confused XML; literal/escape-equivalent duplicate JSON keys and lone surrogates in catalog/archive/backup/receipt/tabular paths; deceptive JSON-LD/CSL; RIS, MARC/MARCXML, BibTeX, and tabular cases;
 9. formula-leading, delimiter, quote, newline, Unicode, markup, and duplicate-identifier cases;
-10. storage states for stale tokens, active/manifest mismatch, bound/unbound prior generations, invalid manifests, and orphan generations;
-11. internal canary values that must never appear in a Public Notice; and
-12. viewport, long-value, dense-index, and report-capacity fixtures.
+10. storage states for stale tokens, missing/corrupt generations, active/manifest mismatch, bound/unbound prior generations, display-metadata mismatch, maximum-safe generation, invalid/orphan storage, absent/mismatched anchors, whole-history regeneration, and whole-local-store replacement;
+11. cloned/coherently substituted catalog, archive, and backup review objects plus missing/copied/tampered evidence dispositions;
+12. unsafe/absent primary IDs, equivalent DOI labels, duplicate archival reference codes, contradictory singular RIS/MARC/MODS/DC/EAD/JSON-LD/CSL identities, and legitimate repeatable controls;
+13. incidents that attempt resolution without same-update closure evidence or an assigned owner, plus resolved incidents missing owner, note, or closure criterion;
+14. internal canaries, synthetic states, stale/dirty/unnamed/recovery/unanchored/continuity-failure/evidence-unverified publication state, and unresolved findings that block outward output;
+15. delayed/suppressed cross-tab notification, pre-click storage mutation, during-construction mutation, storage-read failure, and browser activation cases;
+16. exact, stale, cross-workspace, mutated, and co-located continuity receipts; and
+17. viewport, long-value, dense-index, and report-capacity fixtures.
 
 Never put exploit fixtures or restricted content on a public issue, shared production origin, or unapproved receiving tenant.
 
@@ -139,10 +144,10 @@ Do not record “works,” “looks good,” or a screenshot alone. The evidence
 6. Before Apply, verify that the active revision has not changed.
 7. Inspect the two labeled blocks: Original input and New output.
 8. Confirm that source code/name/value/definition and all canonical output fields are available to keyboard and assistive technology.
-9. Apply an accepted review and confirm exactly one successor revision and state-bound audit event.
-10. Attempt apply after changing source/provenance or destination state; verify rejection and prior-state preservation.
+9. Exercise missing disposition, reject, withdraw, and admit-unverified. Confirm no default is supplied; reject/withdraw add no records; admission creates exactly one successor revision, a content-bound evidence record, and a state-bound event, but no trusted/verified status.
+10. Clone a successful catalog review and coherently change its filename, format, digest, record content, and record provenance; verify Apply rejects it. Repeat with an archive review, then change destination state and verify prior-state preservation.
 
-Acceptance: no implicit data; review is nonmutating; all evidence is inspectable; apply is explicit and revalidated; rejection causes no partial mutation.
+Acceptance: no implicit data; review is nonmutating; all evidence/claims are inspectable; apply and disposition are explicit and revalidated; rejection causes no partial mutation; fabricated but valid content remains visibly unverified and diagnostic-only.
 
 ### B. Hostile-import refusal
 
@@ -150,11 +155,14 @@ Execute the registered negative and exact-boundary fixtures. At minimum cover:
 
 - file byte, MIME/extension, fatal UTF-8, control-character, record-count, and canonical-array bounds;
 - XML declaration, DTD/entity/processing instruction, foreign element/applied attribute namespace, unsupported same-namespace structure, hidden/mixed content, 256/257 depth, 100,000/100,001 element/allocation, and 64/65 attribute cases;
-- RIS missing/duplicate/noninitial `TY`, malformed tagged line, missing/nonterminal `ER`, blank-separator misuse, and 1,024/1,025 source-evidence cases;
-- MARC invalid leader, malformed tag/indicator/subfield, blank-separator misuse, tagged-line injection, and 1,024/1,025 cases;
-- BibTeX nested braces and safe values, then directives, macros, concatenation, duplicate fields, malformed delimiters, excessive nesting, and 1,022/1,023-field cases;
-- JSON unknown/prototype keys, unsupported version, structural depth/width/string/array bounds, and disguised foreign JSON above 5 MiB; and
+- RIS missing/duplicate/noninitial `TY`, duplicate singular `ID`, malformed line, missing/nonterminal `ER`, separator misuse, and 1,024/1,025 cases;
+- MARC/MARCXML duplicate `001`/`003`, per-field duplicate `020`/`022`/`024` `$a` or `024` `$2`, legal distinct repeats, invalid leader/tag/indicator/subfield, separator misuse, injection, and 1,024/1,025 cases;
+- MODS repeated `recordInfo`/contradictory `recordIdentifier`, Dublin Core private-wrapper duplication, and EAD missing/duplicate/conflicting repository carriers with valid multipart/repeatable controls;
+- BibTeX nested braces/safe values and CR/LF/CRLF comments, then directives, macros, concatenation, duplicate fields, malformed delimiters, excessive nesting, and 1,022/1,023-field cases;
+- JSON literal/escape-equivalent duplicate members and lone high/low surrogates across every raw/cell JSON path; unknown/prototype keys, unsupported version, bounds, and disguised foreign JSON above 5 MiB;
+- JSON-LD exact/remote/object/array/nested/graph-item contexts, wrong graph shape, `@id`/identifier conflicts, empty schemes, and Unicode-lookalike private URNs; CSL extension/dispatch, case/NFKC identity-key aliases, and wrong identity value types; and
 - delimited unknown/duplicate columns, row-width mismatch, invalid booleans, unterminated quote, formula-leading content, embedded delimiter, and line-break behavior.
+- unsafe supplied catalog primary IDs, absent primary IDs, supported `doi:` label variants representing the same DOI, and duplicate archival reference codes across distinct records.
 
 Acceptance: each accepted boundary retains the complete expected value set; each invalid or over-limit file is rejected as a whole with a bounded operator-facing reason; no source line, array item, or record silently disappears; no network request is made.
 
@@ -167,6 +175,7 @@ Acceptance: each accepted boundary retains the complete expected value set; each
 5. Open outputs in the institution-supported cataloging, discovery, spreadsheet, or transformation tool.
 6. Compare every expected field, repeatability, type mapping, escaping, order where meaningful, warnings, and declared loss.
 7. Verify discovery profile, suppression, and link-routing records without executing a route.
+8. Confirm an unsafe supplied catalog primary ID rejects, an absent primary ID receives the documented source-digest/ordinal local ID, and equivalent supported DOI label forms collide during duplicate review.
 
 Acceptance: internal lossless/native paths preserve all defined values; crosswalk loss matches the documented profile; receiving-system differences are recorded and accepted by the metadata owner; no claim is made that URL syntax validation proves resolver availability.
 
@@ -190,6 +199,7 @@ Acceptance: records support reconciliation/handoff but do not appear to replace 
 6. Export representative EAD 4.0, EAD3, EAD 2002, AtoM CSV, ArchivesSpace crosswalk CSV, and DCTAP.
 7. Inspect those outputs in institution-supported archival tools/profiles.
 8. Create synthetic copy-provenance and conservation-treatment service records; confirm separation of general description, copy evidence, condition, and treatment authorization.
+9. Attempt to assign the same archival reference code to two distinct records and verify the entire set rejects.
 
 Acceptance: unsupported hierarchy or structure fails closed; lossless package preserves exact field kinds/values; receiving-tool differences and private/public defaults are reviewed by an archivist; no export is treated as publication or custody authority.
 
@@ -206,28 +216,37 @@ Acceptance: records support review and transfer but do not claim repository cust
 ### G. Incidents, changes, and reports
 
 1. Create incidents across severity/state values, add evidence, change owner/next action, and add notes.
-2. Switch incidents while a note draft exists; verify it cannot cross records or disappear after a rejected update.
-3. Generate operational documents and confirm revision/recovery context.
-4. Generate the Technical Report; inspect document control, flows, inventory, all Original/New records, findings, incidents, schemas, configuration, revisions, audit, safeguards, and limitations.
-5. Use internal canary strings in every field excluded from Public Notice; generate a notice and prove all canaries absent.
-6. Add an open Sample data incident and verify notice generation blocks.
-7. Review the nonsynthetic category-only notice as though preparing publication, but do not publish it.
+2. Attempt resolution without a closure note, then without an assigned owner; both must reject. Resolve only by supplying owner and contemporaneous evidence in the same update.
+3. Switch incidents while an update draft exists; verify it cannot cross records or disappear after a rejected update.
+4. With at least two incidents, generate incident ticket, vendor escalation, and postmortem documents only after explicitly selecting the intended incident. Verify no value from the unselected incident appears and that supported closure evidence is included.
+5. Load syntactically valid resolved incidents missing closure note, assigned owner, or closure criterion; verify incident-bound documents and Public Notice reject them rather than implying supported closure.
+6. Generate the Technical Report; inspect document control, flows, bounded active-state inventory/records, findings, incidents, schemas, configuration, revisions, audit, safeguards, and explicit completeness/authenticity limits.
+7. Use internal canary strings in every field excluded from Public Notice; generate a notice and prove all canaries absent.
+8. Add synthetic catalog content and synthetic incidents in open and resolved states; verify every ordinary compatibility, operational, and public output blocks. Confirm the Technical Report remains available with a sample warning and begin blank before production output.
+9. Exercise invalid/unchecked, finding, unnamed, dirty, recovery, stale, unanchored/continuity-failure, and admitted/unattributed-evidence states; verify every authoritative catalog, archive, service, operational, and public path fails closed. Verify zero-record catalog output also rejects.
+10. Suppress/delay cross-tab notification, change the named generation immediately before click, and change it during a deliberately large artifact build. Verify the first reopen catches pre-click state, the final reopen catches the construction race, content is built only from the reopened snapshot, and no file activates on failure.
+11. Attempt a later withdrawal of an admitted fabricated source while its records remain retained; verify Technical Report discloses both decisions and ordinary output/Public Notice remain blocked.
+12. Attempt Public Notice from unnamed, dirty, stale, unanchored, and evidence-unverified state and from an empty incident register. Verify blocked cases; the empty register disclaims a service-health all-clear.
+13. Review the nonsynthetic category-only notice as though preparing publication, confirm the browser created the expected file, but do not publish it.
 
-Acceptance: state changes are revision/audit bound; note drafts are safe; Technical Report is complete and inert; Public Notice contains only the fixed projection; human publication review remains explicit.
+Acceptance: state changes are revision/audit bound; closure/target are explicit; drafts are safe; Technical Report is a bounded diagnostic rendering; authoritative artifacts match the exact saved state at verification instants and fail on detected races; Public Notice contains only the fixed projection; later currency and human publication approval remain explicit.
 
 ### H. Workspace, backup, recovery, and deletion
 
-1. Create a named workspace; save; modify; save again; reopen and compare counts/digests.
-2. Attempt a stale-tab save and verify overwrite is blocked.
-3. Download a current-session backup and a separately selected saved-workspace backup; verify action names and targets.
-4. Inspect backup JSON and confirm `protection` is `plaintext-json-not-encrypted`.
-5. Alter payload/state/digest/version/unknown field and verify review rejection.
-6. Exercise manifest-bound prior recovery; confirm it opens as an unsaved copy without stored rewrite/deletion.
-7. Exercise invalid-manifest and orphan-generation inspection; verify a selected valid candidate only, reconstruct with a new UUID/name, and compare source bytes before/after.
-8. Migrate a verified synthetic backup from the old origin to the proposed canonical origin; explicitly create/save/reopen and compare.
-9. Delete the selected local workspace; verify the open copy and downloaded files are not falsely reported erased.
+1. Create a named workspace; save; confirm it is unanchored and ordinary output blocks. Explicitly accept a baseline with the required continuity-not-authenticity acknowledgment; download its receipt; modify/save; confirm the anchor advances atomically and the old receipt is stale.
+2. Attempt a stale-tab save and verify overwrite is blocked. With notification delayed, request output and verify the click-time storage reopen still blocks it.
+3. Immediately before a normal save, remove/corrupt the active generation and separately remove/corrupt the prior generation that rotation would delete; verify each save stops and every remaining stored byte is preserved.
+4. Attempt recovery save while active state still verifies and with altered input that differs from the verified fallback; verify both reject. Exercise the maximum-safe generation and valid-shaped manifest metadata mismatch cases.
+5. Download a current-session backup, a separately selected saved-workspace backup, and the exact current continuity receipt; verify action names and targets.
+6. Inspect backup JSON and confirm `protection` is `plaintext-json-not-encrypted`.
+7. Alter payload/state/digest/version/unknown/duplicate field or add a lone surrogate and verify rejection. Clone/substitute a successful backup review and verify Open rejects. Exercise missing/reject/withdraw dispositions; only admit-unverified opens, and it adds an outer unverified backup evidence record.
+8. Exercise manifest-bound prior recovery; confirm it opens as an unsaved copy without stored rewrite/deletion.
+9. Exercise invalid-manifest and orphan-generation inspection; verify a selected valid candidate only, reconstruct with a new UUID/name, and compare source bytes before/after.
+10. Regenerate a completely internally valid replacement workspace/history while retaining the old local anchor; verify continuity failure and no in-place re-anchor. Then replace every browser-local store coherently; verify local checks alone cannot distinguish it but the independently retained exact old receipt fails comparison. Repeat with a stale/cross-workspace/mutated receipt.
+11. Migrate a synthetic backup from old to canonical origin. Confirm backup excludes anchor/receipt, Open is explicitly unverified, the new workspace is unanchored, and the old receipt cannot continue its new workspace/lineage. Preserve transition evidence and explicitly accept a new baseline after review.
+12. Delete the selected local workspace; verify its local anchor is deleted but the open copy and downloaded backup/receipt are not falsely reported erased.
 
-Acceptance: all targets are explicit; mismatches stop rather than hide corruption; recovery is non-destructive; plaintext and origin boundaries are understood; external disposition remains governed.
+Acceptance: all targets, reviews, dispositions, and baseline choices are explicit; freshness, identity, digest, and checkpoint mismatches stop; recovery is non-destructive and unanchored; local continuity/unsigned receipts are not authenticity; plaintext/origin boundaries and external governance are understood.
 
 ## Accessibility protocol
 
@@ -295,6 +314,9 @@ Stop the affected evaluation immediately when:
 - the application transmits workspace content or follows an imported URL;
 - an invalid import partially mutates trusted state or silently drops a line/value/record;
 - a digest disagreement is hidden by fallback or recovery rewrites/deletes source evidence;
+- a reviewed object can be cloned or coherently substituted into Apply/Open;
+- an incident resolves without same-update closure evidence and an assigned owner, or an incident-bound document silently chooses its target;
+- an ordinary outward artifact bypasses an integrity, freshness, sample, finding, closure, or saved-publication gate;
 - Public Notice receives a nonallowlisted/internal value;
 - a safety-critical task is inaccessible or a destructive target is ambiguous;
 - testing degrades another service, DNS, mail, receiving tenant, or account security;
