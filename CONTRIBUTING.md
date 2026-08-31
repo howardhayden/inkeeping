@@ -37,7 +37,7 @@ Use the repository template. Keep commits reviewable, do not bypass branch prote
 
 ## Contribution licensing
 
-By submitting a contribution, you represent that you have the right to submit it and agree to license it under the terms governing the affected material in [LICENSING.md](LICENSING.md). Software and mixed source files follow the MIT License; separately licensed standalone documentation follows CC BY-SA 4.0. Third-party material must retain its original notices and terms.
+By submitting a contribution, you represent that you have the right to submit it and agree to license it under the written terms governing the affected material in [LICENSING.md](LICENSING.md). Current software and mixed source files are source-available for noncommercial use under PolyForm-Noncommercial-1.0.0; separable original documentation and media use CC-BY-NC-SA-4.0. Commercial use requires a separate written license. Third-party material must retain its original notices and terms.
 
 ## Licensing of contributions
 

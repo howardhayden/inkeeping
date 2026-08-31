@@ -1,8 +1,9 @@
-import { activeRevision, checkRecords, type CatalogRecord, type Incident, type Workspace } from "./lab-core.ts";
+import { activeRevision, assessActiveEvidence, checkRecords, validateWorkspaceSnapshot, type CatalogRecord, type Incident, type Workspace } from "./lab-core.ts";
 import { ARCHIVE_FIELD_KINDS, ARCHIVE_RECORD_TYPES, type ArchiveFieldKind, type ArchiveSchema, type ArchiveUnit } from "./archival-schemas.ts";
 import { REPORT_JOST_FONTS } from "./report-fonts.ts";
 import { DATA_FORMAT_RULES, RECORD_FORMATS } from "./record-formats.ts";
 import { SERVICE_AREAS, SERVICE_DATA_FORMAT_RULES, SERVICE_RECORD_DEFINITIONS, serviceDefinition, type ServiceArea, type ServiceRecord, type ServiceValue } from "./service-register.ts";
+import type { ContinuityStatus } from "./continuity-anchor.ts";
 
 export const TECHNICAL_REPORT_FILENAME = "in-keeping-technical-report.html";
 export const PUBLIC_NOTICE_FILENAME = "in-keeping-public-notice.html";
@@ -12,6 +13,11 @@ const MAX_TECHNICAL_REPORT_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_REPORT_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 export type ReportAuditState = "not-checked" | "valid" | "invalid" | "idle";
+export type TechnicalReportContext = {
+  savedCopyStatus?: "current" | "stale" | "unsaved-changes" | "not-saved";
+  continuityStatus?: ContinuityStatus;
+  continuityReason?: string;
+};
 
 const PUBLIC_SERVICE_COPY = {
   "Electronic access": "Some full-text links may fail. Try the item again from the library record, or ask staff for another access route.",
@@ -22,15 +28,26 @@ const PUBLIC_SERVICE_COPY = {
 
 type PublicService = keyof typeof PUBLIC_SERVICE_COPY;
 
-export function makeTechnicalReportHtml(
+export async function makeTechnicalReportHtml(
   workspace: Workspace,
-  auditState: ReportAuditState = "not-checked",
+  _auditState: ReportAuditState = "not-checked",
   generatedAt = new Date().toISOString(),
-): string {
+  context: TechnicalReportContext = {},
+): Promise<string> {
+  // Retained for call-site compatibility; report integrity is derived below
+  // from full snapshot validation and never from this caller declaration.
+  void _auditState;
   const inputBytes = new TextEncoder().encode(JSON.stringify(workspace)).byteLength;
   if (inputBytes > MAX_TECHNICAL_REPORT_INPUT_BYTES) {
     throw new Error("The workspace is too large for one technical report. Export the catalog, archive, service register, and workspace backup separately.");
   }
+  let snapshotValid = true;
+  try {
+    await validateWorkspaceSnapshot(workspace);
+  } catch {
+    snapshotValid = false;
+  }
+  const auditState: ReportAuditState = snapshotValid ? "valid" : "invalid";
   const revision = activeRevision(workspace);
   const timestamp = exactTimestamp(generatedAt);
   const findings = [...checkRecords(revision.records, Number.POSITIVE_INFINITY)].sort((a, b) =>
@@ -47,28 +64,56 @@ export function makeTechnicalReportHtml(
   const units = revision.archiveUnits ?? [];
   const serviceRecords = [...(revision.serviceRecords ?? [])].sort((a, b) => a.area.localeCompare(b.area) || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
   const openIncidents = incidents.filter((incident) => incident.state !== "resolved");
-  const reportState = findings.some((finding) => finding.severity === "error")
-    || openIncidents.some((incident) => incident.severity === "high")
+  const unsupportedClosures = incidents.filter((incident) => incident.state === "resolved" && (!incident.notes.some((note) => note.trim()) || !incident.ownerRole.trim() || /^unassigned$/i.test(incident.ownerRole.trim()) || !incident.nextAction.trim()));
+  const blockedServices = serviceRecords.filter((record) => record.state === "blocked");
+  const reviewServices = serviceRecords.filter((record) => record.state === "review" || record.state === "due");
+  const sampleContaminated = incidents.some((incident) => incident.synthetic) || revision.records.some((record) => record.source.format === "fixture");
+  const savedCopyStatus = context.savedCopyStatus ?? "not-saved";
+  const continuityStatus = context.continuityStatus ?? "unanchored";
+  const continuityReason = context.continuityReason ?? "No separately retained continuity checkpoint was supplied to this generator.";
+  const evidenceAuthority = workspace.evidenceAuthority ?? [];
+  const evidenceApplications = workspace.evidenceApplications ?? [];
+  const applicationByDecision = new Map(evidenceApplications.map((record) => [record.decisionRecordSha256, record]));
+  const activeEvidence = assessActiveEvidence(workspace);
+  const admittedUnverifiedEvidence = evidenceAuthority.filter((record) => record.disposition.decision === "admit-unverified");
+  const reportState = auditState === "invalid"
     ? "Action required"
-    : findings.length || openIncidents.length
+    : findings.some((finding) => finding.severity === "error")
+    || openIncidents.some((incident) => incident.severity === "high")
+    || blockedServices.length > 0
+    || unsupportedClosures.length > 0
+    || sampleContaminated
+    || savedCopyStatus === "stale"
+    || continuityStatus === "continuity-failure"
+    ? "Action required"
+    : auditState !== "valid" || findings.length || openIncidents.length || reviewServices.length > 0 || savedCopyStatus !== "current" || continuityStatus !== "continuity-corroborated" || activeEvidence.blocked
       ? "Review required"
-      : "No active exceptions";
+      : "No active exceptions recorded in this workspace";
   const auditLabel = auditState === "valid"
-    ? "Internally consistent"
+    ? "Internally consistent; not authenticated"
     : auditState === "invalid"
       ? "Mismatch detected"
       : "Not checked for this export";
 
   const documentControl = [
-    statusBanner("Current state", reportState, reportState === "Action required"),
+    statusBanner("Current state", reportState, reportState === "Action required" ? "danger" : reportState === "Review required" ? "review" : "neutral"),
     '<dl class="metadata-grid">',
     definition("Workspace", workspace.name),
     definition("Active revision", revision.id),
     definition("Revision digest", revision.digest),
-    definition("Snapshot updated", displayTime(workspace.updatedAt), workspace.updatedAt),
-    definition("Report generated", displayTime(timestamp), timestamp),
+    definition("Workspace updated — browser clock", displayTime(workspace.updatedAt), workspace.updatedAt),
+    definition("Report generated — browser clock", displayTime(timestamp), timestamp),
     definition("Audit chain", auditLabel),
+    definition("Named saved copy", savedCopyStatus === "current" ? "Caller or interface reports that this session matches a named saved version; this generator did not independently verify browser-storage freshness" : savedCopyStatus === "stale" ? "Named saved version changed or disappeared in another tab" : savedCopyStatus === "unsaved-changes" ? "Current session contains unsaved changes" : "Current session is not attached to a named saved workspace"),
+    definition("Continuity", `${continuityStatus} — ${continuityReason}`),
+    definition("Evidence dispositions", `${evidenceAuthority.length} recorded; ${evidenceApplications.filter((item) => item.outcome === "applied").length} applied and ${evidenceApplications.filter((item) => item.outcome === "not-applied").length} not applied; ${activeEvidence.activeUnverifiedDecisionDigests.length} unverified admission${activeEvidence.activeUnverifiedDecisionDigests.length === 1 ? "" : "s"} reach active content`),
+    definition("Evidence scope", "This report covers only the information present in this workspace. The absence of a record is not evidence that an event, dependency, error, or unresolved condition does not exist."),
     "</dl>",
+    unsupportedClosures.length ? '<p class="handling-note"><strong>Action required:</strong> Unsupported closure evidence or criteria are missing for resolved incident(s) ' + unsupportedClosures.map((incident) => html(incident.id)).join(", ") + '. Reopen each incident or record an assigned owner, a contemporaneous closure note, and a nonblank closure criterion or next action before relying on an all-clear.</p>' : "",
+    sampleContaminated ? '<p class="handling-note"><strong>Sample data:</strong> This workspace contains synthetic records or incidents. Use this Technical Report only for review and testing; ordinary compatibility, operational, and public outputs must come from a blank production workspace.</p>' : "",
+    savedCopyStatus === "stale" ? '<p class="handling-note"><strong>Stale session:</strong> The named saved workspace changed or disappeared in another tab. This report describes the open session, not the newer saved version. Reconcile both before reliance.</p>' : savedCopyStatus === "unsaved-changes" ? '<p class="handling-note"><strong>Unsaved session:</strong> This report includes browser-session changes that are not present in the named saved workspace.</p>' : savedCopyStatus === "not-saved" ? '<p class="handling-note"><strong>Working copy:</strong> This report was generated from a session that is not attached to a named saved workspace.</p>' : "",
+    continuityStatus === "continuity-failure" ? '<p class="handling-note"><strong>Continuity failure:</strong> The current saved state did not match its separately retained local checkpoint. Preserve both and investigate; do not re-anchor this lineage in place.</p>' : continuityStatus === "unanchored" ? '<p class="handling-note"><strong>Unanchored:</strong> Internal hashes alone do not detect a fully regenerated history. Ordinary outward artifacts require an explicitly accepted checkpoint and exact current independent receipt comparison.</p>' : continuityStatus === "continuity-verified-local" ? '<p class="handling-note"><strong>Local checkpoint only:</strong> The saved state matches its same-origin checkpoint, but ordinary outward artifacts remain blocked until an independently retained receipt for this exact generation is compared.</p>' : '<p class="handling-note"><strong>Corroborated continuity only:</strong> The exact current receipt comparison detects defined local replacement, but does not establish authenticity, identity, custody, completeness, authority, or trusted time.</p>',
+    activeEvidence.blocked ? `<p class="handling-note"><strong>Active evidence barrier:</strong> ${html(activeEvidence.reason)} Historical decisions and non-application outcomes remain recorded; withdrawal alone cannot launder retained active content.</p>` : admittedUnverifiedEvidence.length ? '<p class="handling-note"><strong>Historical evidence decisions:</strong> Unverified admissions remain in the decision register, but none currently reach an active output entity. They remain reviewable and do not become authoritative.</p>' : "",
     '<div class="metric-grid" aria-label="Current inventory totals">',
     metric(revision.records.length, "Catalog records"),
     metric(schemas.length, "Archive schemas"),
@@ -91,7 +136,7 @@ export function makeTechnicalReportHtml(
       "technical-import-flow",
       "Import trust boundary",
       "Each untrusted file follows one linear path. Review occurs before the workspace can change.",
-      ["Exchange file", "Size, MIME and UTF-8 bounds", "Exact parser reconstruction", "Quarantine review", "Atomic revision"],
+      ["Exchange file", "Size, MIME and UTF-8 bounds", "Exact parser reconstruction", "Quarantine review", "Explicit unverified disposition", "Atomic revision"],
     ),
     '<div class="diagram-lanes" aria-label="Catalog, archives, and service-register processing lanes">',
     laneFigure("Catalog lane", ["Library exchange", "Canonical catalog record", "Deterministic checks", "Discovery exports"]),
@@ -117,7 +162,7 @@ export function makeTechnicalReportHtml(
         ["Archive records", units.length, String(units.filter((unit) => unit.published === true).length) + " explicitly published; all others remain private."],
         ["Service records", serviceRecords.length, "Typed local registers cover operational preflight and continuity; authoritative systems remain external."],
         ["Incidents", incidents.length, String(openIncidents.length) + " open; resolved records remain in local history."],
-        ["Audit events", workspace.audit.length, "SHA-256 verification detects hash, link, and current-state mismatches; it has no signer or external anchor."],
+        ["Audit events", workspace.audit.length, "SHA-256 verification detects hash, link, and current-state mismatches. The chain has no signer; continuity checkpoint status is disclosed in Document control."],
       ],
     ),
     dataTable(
@@ -151,6 +196,27 @@ export function makeTechnicalReportHtml(
         findings.map((finding) => [finding.severity, finding.code, finding.recordId ?? "Workspace", finding.label, finding.detail]),
       )
     : emptyOutput("No metadata or access findings were present in this revision.");
+
+  const evidenceRegister = evidenceAuthority.length
+    ? dataTable(
+        "evidence-authority-table",
+        "Evidence disposition register — " + evidenceAuthority.length,
+        ["Source", "Scope", "Disposition", "Application outcome", "Claimed origin", "Actor role claim", "Policy reference", "Browser time", "Binding"],
+        evidenceAuthority.map((record) => [
+          `${record.evidence.source.kind} · ${record.evidence.source.filename} · sha256:${record.evidence.source.sha256}`,
+          `${record.evidence.scope.kind} · ${record.evidence.scope.entityIds.join(", ")}`,
+          record.disposition.decision,
+          applicationByDecision.has(record.recordSha256)
+            ? `${applicationByDecision.get(record.recordSha256)!.outcome} · ${applicationByDecision.get(record.recordSha256)!.reason} · ${applicationByDecision.get(record.recordSha256)!.detail}${applicationByDecision.get(record.recordSha256)!.resultingRevisionId ? ` · revision:${applicationByDecision.get(record.recordSha256)!.resultingRevisionId} · revision-state-sha256:${applicationByDecision.get(record.recordSha256)!.resultingRevisionDigest}` : ""}`
+            : "legacy/unknown application outcome — treated conservatively when scoped content is active",
+          `${record.disposition.claimedOrigin} · ${record.disposition.custodyNote}`,
+          record.disposition.actorRoleClaim,
+          record.disposition.policyReference,
+          `${record.disposition.atBrowser} · ${record.disposition.timeBasis}`,
+          record.recordSha256,
+        ]),
+      ) + '<p class="handling-note"><strong>Authority limit:</strong> Every row is a content-bound local decision record. No row authenticates its actor, source, custody claim, chronology, completeness, or truth.</p>'
+    : emptyOutput("No explicit evidence dispositions were recorded. Absence of a disposition is not evidence of authority or completeness.");
 
   const incidentRegister = incidents.length
     ? '<div class="record-stack">' + incidents.map(incidentRecord).join("") + "</div>"
@@ -259,7 +325,7 @@ export function makeTechnicalReportHtml(
     flowFigure(
       "technical-event-chain-flow",
       "Linked-event verification",
-      "For every stored event, validation requires the expected sequence and previous hash, reconstructs the bounded event fields, and compares a recomputed SHA-256 hash with the stored hash. This detects changed fields, broken links, reordering, and current-state mismatch unless every affected digest and hash is also rewritten. Without a signer or external anchor, a validly truncated tail can be indistinguishable when the preceding event still binds the same state, and an actor able to rewrite the workspace can construct a new internally consistent chain. The chain cannot prove identity, authorization, trusted time, provenance, or nonrepudiation.",
+      "For every stored event, validation requires the expected sequence and previous hash, reconstructs the bounded event fields, and compares a recomputed SHA-256 hash with the stored hash. This detects changed fields, broken links, reordering, and current-state mismatch unless every affected digest and hash is also rewritten. A separately retained checkpoint can detect a regenerated saved history; coherent replacement of the workspace and every local checkpoint requires comparison with an independently held receipt. None of these hashes prove identity, authorization, truth, custody, completeness, trusted time, provenance, or nonrepudiation.",
       ["Genesis or prior-event hash", "Sequence and bounded event fields", "Stored state digest", "Recomputed SHA-256 event hash", "Stored hash and next link", "Match, continue, or fail"],
     ),
     dataTable(
@@ -314,7 +380,7 @@ export function makeTechnicalReportHtml(
         ["Stale tab overwrite", "Every manifest carries an optimistic token checked during save.", "The stale save is rejected and the user must reopen the current workspace.", "Simultaneous edits are not merged automatically."],
         ["Corrupted current generation", "The manifest binds current and prior generation digests; opening also performs strict snapshot, revision, archive, service, and audit validation.", "A manifest-bound prior generation may open only as an unsaved recovery copy. Opening never rewrites or deletes stored generations.", "One prior manifest-bound generation is retained. Failed or orphaned bytes require explicit inspection and remain browser-local until separately deleted."],
         ["Unintended disclosure", "Application code implements no analytics or background workspace upload; the public notice is a fixed one-way projection that excludes catalog, archive, service-register, configuration, and audit data.", "Workspace content stays in memory or browser storage unless the operator downloads or shares a file. The hosting provider may separately process ordinary HTTP request metadata.", "Downloaded files are plaintext and outside this application's deletion, retention, encryption, and access controls."],
-        ["Undetected state alteration", "Each current audit event links the prior hash; the latest event binds the complete non-audit workspace state with SHA-256.", "Verification fails before an internally inconsistent snapshot is trusted.", "There is no signer or external anchor. A validly truncated tail may be indistinguishable when the preceding event binds the same state, and an actor with write access can recompute an internally consistent chain. It does not prove identity, authority, trusted time, provenance, or nonrepudiation."],
+        ["Undetected state alteration", "Each current audit event links the prior hash; the latest event binds the complete non-audit workspace state with SHA-256. Named saved workspaces can add a separately retained continuity checkpoint.", "Internal mismatch or checkpoint disagreement blocks ordinary output.", "An actor controlling every browser-local store can replace both workspace and checkpoint; compare an independently held receipt. No hash proves identity, truth, authority, custody, completeness, trusted time, provenance, or nonrepudiation."],
         ["Accidental deletion", "Deletion names the target, requires confirmation, and never deletes downloaded backups.", "The selected browser-local workspace or all local workspaces are removed only after confirmation.", "Browser-local deletion has no institutional records-retention authority and cannot recall exported copies."],
       ],
     ),
@@ -327,7 +393,7 @@ export function makeTechnicalReportHtml(
     + boundary("Accessibility", "The document uses landmarks, ordered flows, scoped table headers, explicit status text, keyboard-scrollable data regions, print rules, and 400% reflow.")
     + boundary("Interoperability", "Crosswalks preserve the local canonical model. Vendor acceptance and external schema validation remain receiving-system responsibilities.")
     + boundary("Browser-local persistence", "Named workspaces keep a current and one prior verified generation. A downloaded workspace backup is a plaintext, operator-controlled recovery copy outside browser eviction and application deletion.")
-    + boundary("Integrity limit", "The latest audit event binds the complete non-audit state and linked hashes detect internal mismatch. Without a signer or external anchor, the chain cannot always identify a validly truncated tail, prevent wholesale recomputation by an actor with write access, or establish institutional identity, authorization, trusted time, provenance, or nonrepudiation.")
+    + boundary("Integrity limit", "The latest audit event binds the complete non-audit state and linked hashes detect internal mismatch. A separately retained local checkpoint detects a regenerated saved history while that checkpoint remains unchanged; an independently held receipt is needed to detect coherent replacement of every browser-local store. Neither proves identity, authorization, truth, custody, completeness, trusted time, provenance, or nonrepudiation.")
     + "</div>";
 
   const cells = [
@@ -335,46 +401,57 @@ export function makeTechnicalReportHtml(
     notebookCell(2, "Software execution boundary", executionBoundary),
     notebookCell(3, "Inventory and interoperability", inventory),
     notebookCell(4, "Findings", findingRegister),
-    notebookCell(5, "Catalog records — original input and new output", catalogRecords),
-    notebookCell(6, "Incident register", incidentRegister),
-    notebookCell(7, "Archive schema register", schemaRegister),
-    notebookCell(8, "Archive records — original input and new output", archiveRecords),
-    notebookCell(9, "Service register — original input and new output", serviceRegister),
-    notebookCell(10, "Data and record-type formatting", formats),
-    notebookCell(11, "Configuration register", configuration),
-    notebookCell(12, "Recovery and audit", recovery),
-    notebookCell(13, "Safeguards and recovery", safeguards),
-    notebookCell(14, "Production boundaries", boundaries),
+    notebookCell(5, "Evidence disposition register", evidenceRegister),
+    notebookCell(6, "Catalog records — original input and new output", catalogRecords),
+    notebookCell(7, "Incident register", incidentRegister),
+    notebookCell(8, "Archive schema register", schemaRegister),
+    notebookCell(9, "Archive records — entered active values and canonical active records", archiveRecords),
+    notebookCell(10, "Service register — entered active values and canonical active records", serviceRegister),
+    notebookCell(11, "Data and record-type formatting", formats),
+    notebookCell(12, "Configuration register", configuration),
+    notebookCell(13, "Recovery and audit", recovery),
+    notebookCell(14, "Safeguards and recovery", safeguards),
+    notebookCell(15, "Production boundaries", boundaries),
   ].join("");
 
   return reportDocument({
     title: workspace.name + " — Technical report",
     eyebrow: "POST-RUN NOTEBOOK · TECHNICAL REPORT",
-    classification: "Staff operational record",
-    description: "A complete local snapshot of the active catalog, archival, service-register, incident, configuration, revision, and audit state.",
+    classification: "Potentially restricted staff record — classify at highest included sensitivity before sharing",
+    description: "A complete active-state rendering of bounded catalog, archival, service-register, incident, and configuration content, plus indexes of retained revisions and audit events present in this local workspace. Historical revision payloads remain in the plaintext workspace backup and are not fully repeated here. This report does not establish external completeness, authenticity, authority, or trusted time.",
     generatedAt: timestamp,
     cells,
   });
 }
 
-export function makePublicNoticeHtml(
+export async function makePublicNoticeHtml(
   workspace: Workspace,
   generatedAt = new Date().toISOString(),
-): string {
+): Promise<string> {
+  try {
+    await validateWorkspaceSnapshot(workspace);
+  } catch {
+    throw new Error("Public Notice is unavailable because full workspace validation failed.");
+  }
   const timestamp = exactTimestamp(generatedAt);
   const openIncidents = workspace.incidents.filter((incident) => incident.state !== "resolved");
-  if (openIncidents.some((incident) => incident.synthetic)) throw new Error("Public Notice is unavailable while open Sample data incidents are present.");
+  if (workspace.incidents.some((incident) => incident.synthetic)) throw new Error("Public Notice is unavailable from a workspace containing Sample data incidents. Begin a blank workspace for publication work.");
+  if (workspace.incidents.some((incident) => incident.state === "resolved" && (!incident.notes.some((note) => note.trim()) || !incident.ownerRole.trim() || /^unassigned$/i.test(incident.ownerRole.trim()) || !incident.nextAction.trim()))) throw new Error("Public Notice is unavailable because one or more resolved incidents lack closure evidence, an assigned owner, or a closure criterion or next action. Reopen or document those incidents first.");
+  const activeEvidence = assessActiveEvidence(workspace);
+  if (activeEvidence.blocked) {
+    throw new Error(`Public Notice is unavailable because active workspace content is unverified or unattributed. ${activeEvidence.reason}`);
+  }
   const services = [...new Set(openIncidents.map(publicService))].sort();
   const status = openIncidents.length
     ? String(openIncidents.length) + " service issue" + (openIncidents.length === 1 ? "" : "s") + " under review"
-    : "No known service issues";
+    : "No active incident is recorded in this workspace";
 
   const currentStatus = [
-    statusBanner("Library service update", status, openIncidents.length > 0),
+    statusBanner("Library service update", status, openIncidents.length > 0 ? "danger" : "review"),
     '<p class="lead">',
     openIncidents.length
       ? "Library staff are reviewing the affected service paths. The notice below contains only information needed to seek access or assistance."
-      : "Catalog, access, and request services have no known active incident recorded in this notice.",
+      : "No active incident is recorded in this workspace. This does not show that every service was checked or working; confirm current service state through the institution's authoritative process before publication.",
     "</p>",
   ].join("");
 
@@ -406,14 +483,15 @@ export function makePublicNoticeHtml(
     + boundary("Need access?", "Contact library staff if you still cannot find, open, or request an item. Include the item title and the step that did not work; do not send passwords or sensitive account details.")
     + boundary("Accessible assistance", "Ask for the response format or access route that works for you. Staff can check alternate copies, request paths, or follow-up methods.")
     + boundary("Notice generated", displayTime(timestamp), timestamp)
+    + boundary("Evidence scope", "This draft reflects only open incident records present in one local workspace. Absence here is not an institutional all-clear, and the browser clock is not trusted time.")
     + boundary("Privacy", "This public file excludes catalog and archive records, service-register fields, record identifiers, staff notes, incident evidence, configuration, revision digests, and audit history.")
     + "</div>";
 
   return reportDocument({
     title: "Library service update — Public notice",
     eyebrow: "POST-RUN NOTEBOOK · PUBLIC NOTICE",
-    classification: "Public information",
-    description: "A plain-language service notice generated from a redacted local projection.",
+    classification: "Draft public information — approval required",
+    description: "A plain-language draft generated solely from open incident records present in a redacted local projection. Publication requires current institutional review and approval.",
     generatedAt: timestamp,
     cells: [
       notebookCell(1, "Current status", currentStatus),
@@ -640,12 +718,12 @@ function archiveRecordPair(unit: ArchiveUnit, schema: ArchiveSchema | undefined,
     id,
     archiveRecordTitle(unit, schema),
     (schema?.recordType ?? "description") + " · " + unit.id,
-    "Original input",
-    "The exact schema-bound field values accepted for this archival record.",
-    codeBlock("Original archival values as JSON", { schemaId: unit.schemaId, schemaVersion: unit.schemaVersion, values: unit.values }),
-    dataTable(id + "-source-fields", "Original archival fields and accessible definitions", ["Field", "Label", "Data type", "Original value", "Definition"], valueRows.length ? valueRows : [["—", "No fields", "—", "—", "The schema accepted an empty value object."]]),
-    "New output",
-    "The complete canonical archival record after hierarchy, publication, language, cardinality, and field-type validation.",
+    "Entered active values",
+    "The schema-bound values present in the active archival record. This model does not retain a separate per-record source version, so these values must not be read as original provenance.",
+    codeBlock("Entered active archival values as JSON", { schemaId: unit.schemaId, schemaVersion: unit.schemaVersion, values: unit.values }),
+    dataTable(id + "-source-fields", "Entered active archival fields and accessible definitions", ["Field", "Label", "Data type", "Active value", "Definition"], valueRows.length ? valueRows : [["—", "No fields", "—", "—", "The schema accepted an empty value object."]]),
+    "Canonical active record",
+    "The canonical active archival record after hierarchy, publication, language, cardinality, and field-type validation.",
     codeBlock("Canonical archival record as JSON", unit),
     dataTable(id + "-output-fields", "Canonical archival output and accessible definitions", ["Field", "Data type", "Current value", "Definition"], outputRows),
   );
@@ -676,12 +754,12 @@ function serviceRecordPair(record: ServiceRecord, index: number): string {
     id,
     record.title,
     serviceAreaLabel(record.area) + " · " + definitionValue.label,
-    "Original input",
-    "The exact typed field values accepted by the service-record definition.",
-    codeBlock("Original service values as JSON", { kind: record.kind, values: record.values }),
-    dataTable(id + "-source-fields", "Original service fields and accessible definitions", ["Field", "Label", "Data type", "Original value", "Definition"], valueRows.length ? valueRows : [["—", "No fields", "—", "—", "This service record contains no optional field values."]]),
-    "New output",
-    "The complete canonical service record included in the revision digest, rollback state, plaintext workspace backup, and generic exchange exports.",
+    "Entered active values",
+    "The typed values present in the active service record. This model does not retain a separate per-record source version, so these values must not be read as original provenance.",
+    codeBlock("Entered active service values as JSON", { kind: record.kind, values: record.values }),
+    dataTable(id + "-source-fields", "Entered active service fields and accessible definitions", ["Field", "Label", "Data type", "Active value", "Definition"], valueRows.length ? valueRows : [["—", "No fields", "—", "—", "This service record contains no optional field values."]]),
+    "Canonical active record",
+    "The canonical active service record included in the revision digest, rollback state, plaintext workspace backup, and generic exchange exports.",
     codeBlock("Canonical service record as JSON", record),
     dataTable(id + "-output-fields", "Canonical service output and accessible definitions", ["Field", "Data type", "Current value", "Definition"], outputRows),
   );
@@ -771,8 +849,8 @@ function publicService(incident: Incident): PublicService {
   return "Library service";
 }
 
-function statusBanner(label: string, value: string, danger: boolean): string {
-  return '<div class="status-banner ' + (danger ? "status-danger" : "status-ok") + '"><span>'
+function statusBanner(label: string, value: string, tone: "danger" | "review" | "neutral"): string {
+  return '<div class="status-banner status-' + tone + '"><span>'
     + html(label) + "</span><strong>" + html(value) + "</strong></div>";
 }
 
@@ -860,7 +938,7 @@ const REPORT_CSS = [
   ".document-eyebrow{margin:0 0 .45rem;color:var(--green);font:700 .75rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em}.document-header h1{max-inline-size:18ch;margin:0;font-size:clamp(2.15rem,6vw,4.8rem);font-weight:400;line-height:.98;letter-spacing:-.045em;overflow-wrap:anywhere}.document-description{max-inline-size:62ch;margin:1rem 0 0;color:var(--muted)}",
   ".document-classification{min-inline-size:0;padding-block:.75rem;border-block:1px solid var(--line);display:grid;gap:.25rem}.document-classification span{color:var(--muted);font-size:.75rem;letter-spacing:.06em;text-transform:uppercase}.document-classification strong{color:var(--red);font-weight:500}.document-classification time{font:400 .75rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}",
   "main{flex:1;min-inline-size:0}.jp-Notebook{min-inline-size:0}.jp-Cell{display:grid;grid-template-columns:minmax(4.5rem,7dvw) minmax(0,1fr);border-bottom:1px solid var(--line)}.jp-InputPrompt{padding:1.45rem 1rem 1rem 0;color:var(--green);font:400 .75rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right;white-space:nowrap}.jp-OutputArea{min-inline-size:0;padding:1.25rem 0 2rem clamp(1rem,3vw,2.5rem);border-inline-start:1px solid var(--line)}.jp-OutputArea>h2{margin:0 0 1rem;font-size:clamp(1.25rem,2vw,1.75rem);font-weight:500;line-height:1.2;letter-spacing:-.02em}",
-  ".status-banner{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;padding:.8rem 0;border-block:2px solid currentColor}.status-banner span{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em}.status-banner strong{font-size:clamp(1.1rem,2.4vw,1.65rem);font-weight:500;text-align:right}.status-ok{color:var(--green)}.status-danger{color:var(--red)}",
+  ".status-banner{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;padding:.8rem 0;border-block:2px solid currentColor}.status-banner span{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em}.status-banner strong{font-size:clamp(1.1rem,2.4vw,1.65rem);font-weight:500;text-align:right}.status-neutral{color:var(--muted)}.status-review{color:var(--ink)}.status-danger{color:var(--red)}",
   ".metadata-grid,.inline-definitions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 1.5rem;margin:1rem 0}.metadata-grid>div,.inline-definitions>div{min-inline-size:0;padding:.55rem 0;border-bottom:1px solid var(--line)}dt{color:var(--muted);font-size:.75rem;letter-spacing:.04em;text-transform:uppercase}dd{margin:.16rem 0 0;overflow-wrap:anywhere}time{overflow-wrap:anywhere}",
   ".metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:1.25rem;border-block:1px solid var(--ink)}.metric-grid>div{min-inline-size:0;padding:1rem;border-inline-end:1px solid var(--line)}.metric-grid>div:nth-child(3n){border-inline-end:0}.metric-grid strong,.metric-grid span{display:block}.metric-grid strong{font-size:clamp(1.5rem,4vw,2.35rem);font-weight:400;line-height:1}.metric-grid span{margin-top:.35rem;color:var(--muted);font-size:.78rem}",
   ".diagram{max-inline-size:100%;margin:1.1rem 0 1.6rem;padding:1rem;border-block:1px solid var(--ink);overflow:hidden}.diagram figcaption,.lane h3{font-size:.9rem;font-weight:600}.diagram>p{max-inline-size:70ch;margin:.25rem 0 1rem;color:var(--muted);font-size:.82rem}.diagram-flow{display:grid;grid-template-columns:repeat(var(--flow-columns,5),minmax(0,1fr));gap:1.6rem;margin:0;padding:0;list-style:none;counter-reset:flow}.diagram-flow li{position:relative;min-inline-size:0;display:grid;place-items:center;min-block-size:5.25rem;padding:.65rem;border:1px solid var(--line-strong);background:var(--paper);text-align:center;overflow-wrap:anywhere;counter-increment:flow}.diagram-flow li:before{content:counter(flow,decimal-leading-zero);position:absolute;inset-block-start:.25rem;inset-inline-start:.35rem;color:var(--green);font:400 .65rem ui-monospace,SFMono-Regular,Menlo,monospace}.diagram-flow li:not(:last-child):after{content:'→';position:absolute;inset-inline-end:-1.15rem;inset-block-start:50%;translate:0 -50%;color:var(--green);font:700 1rem ui-monospace,SFMono-Regular,Menlo,monospace}.diagram-flow li span{font-size:.78rem;line-height:1.35}.diagram-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1.25rem;margin-block:1rem 1.6rem}.lane{min-inline-size:0;margin:0;padding:1rem;border-block:1px solid var(--ink)}.lane .diagram-flow{--flow-columns:1;gap:1.35rem;margin-top:.8rem}.lane .diagram-flow li{min-block-size:3.65rem}.lane .diagram-flow li:not(:last-child):after{content:'↓';inset-inline-start:50%;inset-inline-end:auto;inset-block-start:auto;inset-block-end:-1.15rem;translate:-50% 0}",

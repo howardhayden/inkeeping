@@ -1,6 +1,6 @@
 # Import contract
 
-IN KEEPING treats every selected file as untrusted. Import is a two-step operation: **review** parses and validates a candidate without changing the workspace; **apply** creates a new revision only when the reviewed filename, format, SHA-256 digest, record provenance, record shape, and findings still agree. A rejected or stale review is never partially applied.
+IN KEEPING treats every selected file as untrusted. Import is a three-boundary operation: **review** parses and structurally validates a candidate without changing the workspace; **disposition** requires an explicit `admit-unverified`, `reject`, or `withdraw` decision with no default; and **apply** creates a revision only after `admit-unverified`, from the same successful in-memory review instance, while its filename, format, SHA-256 digest, records or schema, provenance, findings, and other decision fields remain unchanged. A clone, mutation, or coherently substituted review is rejected and the file must be reviewed again. A rejected, withdrawn, or stale review is never partially applied. These bindings prevent post-review substitution; they do not make fabricated but structurally valid content truthful, complete, authentic, or authoritative.
 
 This document is the operational file boundary. [Data formats](DATA_FORMATS.md) defines the canonical records, [interoperability](INTEROPERABILITY.md) defines crosswalk losses, and [standards and references](STANDARDS_AND_REFERENCES.md) states what has and has not been externally validated.
 
@@ -12,6 +12,21 @@ This document is the operational file boundary. [Data formats](DATA_FORMATS.md) 
 - Catalog apply rejects duplicate record IDs, duplicate stable identifiers, any error finding, or a result that would exceed 1,000 catalog records in the workspace.
 - Archive apply revalidates the complete schema and record set. IDs must be unique across the archival workspace; parents must exist in the same schema; hierarchy cycles and excessive depth reject the set.
 - Import does not execute scripts, spreadsheet formulas, XML external references, BibTeX macros, or network requests.
+
+## Evidence disposition boundary
+
+A successful structural review is not an evidence-authority decision. Before catalog or archival Apply, the operator must explicitly supply all disposition fields. The stored decision binds:
+
+- **source:** kind, bounded filename, parser format, byte count, and selected-file SHA-256;
+- **review:** the literal structural status `passed`, canonical reviewed-payload SHA-256, and parser profile;
+- **scope:** the record class and exact entity IDs; and
+- **operator claim:** `admit-unverified`, `reject`, or `withdraw`; claimed origin/custody path (`unknown`, `direct-export`, `transferred-copy`, or `other`); custody note; actor-role claim; rationale; policy/ticket reference; `atBrowser`; and the literal time basis `browser-clock-untrusted`.
+
+Canonical content digests bind the evidence descriptor and decision record. Unknown keys—including authority-shaped additions such as `verified: true`—reject. This mechanism records what an unauthenticated operator claimed about a structurally reviewed source; it does not authenticate the actor, origin, custody path, policy reference, chronology, completeness, or truth. The application exposes no local `verified`, `trusted`, or `authoritative` evidence status.
+
+`admit-unverified` permits the bounded data transition into a revision; it does not increase evidentiary trust. Each valid explicit disposition receives one linked application outcome. `reject`, `withdraw`, destination conflict, and capacity refusal preserve a `not-applied` outcome instead of silently losing the decision; success binds the resulting revision ID and state digest. Source kind, disposition, outcome, and reason must agree. Withdrawal cannot rehabilitate retained active content. Once governed revision work removes every scoped entity, the historical decision remains reportable without permanently latching unrelated outputs.
+
+Imported or restored content is diagnostic-only for ordinary outward artifacts pending independently governed corroboration outside IN KEEPING. The application does not convert that external decision into a local trusted status, so locally unverified content remains blocked until a governed revision removes or supersedes it. The ordinary UI output path requires a clean named save, a matching continuity checkpoint, no unresolved unverified evidence, and a click-time saved-state lease: it reopens the exact named generation, renders from that snapshot, and repeats the comparison immediately before file activation. Lower-level serializers are data transformers, not authority boundaries. Technical Reports, plaintext backups, and continuity receipts remain explicit diagnostic, recovery, or comparison artifacts rather than institutionally authorized derivatives.
 
 ## Catalog import matrix
 
@@ -165,7 +180,7 @@ See [interoperability](INTEROPERABILITY.md) before loading either crosswalk into
 
 ## Complete workspace backup review
 
-Catalog and archival imports add bounded records to a revision. A workspace backup is the separate recovery path for the complete validated workspace: catalog, archive schemas and records, service register, configuration, incidents, revisions, and audit ledger.
+Catalog and archival imports add bounded records to a revision. A workspace backup is the separate recovery path for the complete bounded workspace serialization available to the application: catalog, archive schemas and records, service register, configuration, incidents, retained revisions, and audit ledger. Passing review establishes structural and internal consistency, not authenticity, custody, authority, or evidentiary completeness.
 
 | Boundary | Contract |
 | --- | --- |
@@ -177,15 +192,17 @@ Catalog and archival imports add bounded records to a revision. A workspace back
 | Legacy envelope | `schema: "in-keeping/private-workspace-backup"`, `version: 1`; remains reviewable without the current `protection` field |
 | JSON allocation limits | 18 nested levels, 5,000 array values, 256 object fields, 256 characters per key, 8,192 characters per string; prototype-related and control-bearing keys reject |
 
-`createdAt` must be a real UTC instant. `payloadDigest` is exactly 64 lowercase SHA-256 hexadecimal characters over the compact JSON serialization of the validated workspace. Review validates both the digest and the same exact workspace, revision, URL, archive, service, incident, and state-bound audit rules used for local restoration.
+`createdAt` must be a real UTC instant. `payloadDigest` is exactly 64 lowercase SHA-256 hexadecimal characters over the compact JSON serialization of the internally validated workspace. Review validates both the digest and the same exact workspace, revision, URL, archive, service, incident, evidence-disposition, and state-bound audit rules used for local restoration. Opening accepts only the same unchanged successful in-memory backup-review object; cloned, mutated, or substituted reviews are rejected.
 
-The backup is deliberately labeled **plaintext JSON that is not encrypted**. The application does not imply confidentiality merely because the file is a backup. A valid review opens an unsaved recovery copy; it does not overwrite a named local workspace. The operator must explicitly create or replace a named workspace if the recovery copy should persist in that browser.
+The backup is deliberately labeled **plaintext JSON that is not encrypted**. The application does not imply confidentiality merely because the file is a backup. Before Open, the operator must supply a complete outer evidence disposition bound to the backup file, reviewed workspace payload, parser profile, and active-revision scope. Only `admit-unverified` opens an unsaved recovery copy and appends that outer unverified disposition. `reject` or `withdraw` instead appends the exact decision and linked non-application outcome to the current workspace without replacing its content. The outer decision does not corroborate any evidence claims already nested in the restored workspace. A valid review does not overwrite a named local workspace. The operator must explicitly create or replace a named workspace if the recovery copy should persist in that browser.
 
-Service-register JSON and CSV are exports only; the current application has no independent service-register import. Use a complete workspace backup to restore service records together with their revision and audit context.
+Workspace backups exclude the separately stored local continuity checkpoint. Restoring a backup therefore cannot silently inherit the source browser's continuity status: the restored copy is unanchored until an operator explicitly accepts a new local baseline. An old receipt cannot bootstrap the new workspace ID/lineage; it remains external transition evidence only. A continuity receipt contains comparison metadata, not workspace content. Neither the outer unverified backup disposition nor a local continuity checkpoint proves authenticity, custody, authority, completeness, or trusted time.
 
-## Evidence shown during review
+Service-register JSON and CSV are exports only; the current application has no independent service-register import. Use a workspace backup to restore service records together with their retained revision and audit context.
 
-The record review presents two accessible blocks, under the group label **Original input and new output**:
+## Catalog evidence shown during review
+
+Catalog record review presents two accessible blocks, under the group label **Original input and new output**:
 
 - **Original input** lists retained source elements in source order. Each element has a code, an accessible name, its normalized textual value, and an accessible definition.
 - **New output** lists the complete canonical record produced by the parser, with each field named and defined. It is not a shortened evidence summary.
@@ -194,13 +211,17 @@ The SHA-256 digest binds the complete selected byte stream. The retained source 
 
 Retained elements are normalized display evidence, **not a raw byte-for-byte preservation copy**. Native catalog export omits the internal `source` object and rebuilds source evidence if re-imported. Keep the authoritative source file and its independently managed preservation metadata when evidentiary retention is required.
 
+Archive and service records do not retain a separate per-record original-source version. Their Technical Report sections therefore use **Entered active values** and **Canonical active record**, not **Original input** and **New output**. Keep the authoritative archival/service source and its independently managed custody metadata when source-version evidence is required.
+
 ## Operator release checklist
 
 1. Work in a disposable copy of the receiving system and keep the original file unchanged.
 2. Verify filename, byte count, SHA-256 digest, detected format, record count, and every error or warning.
 3. Compare representative and edge records using both full blocks: **Original input** and **New output**.
-4. Apply only after the review is unblocked. Export the resulting native package as the reversible handoff.
-5. For EAD, AtoM, ArchivesSpace, MARC, MODS, CSL, Schema.org, RIS, or BibTeX delivery, validate the exported artifact in the exact receiving software and version. Record rejected rows, warnings, local templates, and any accepted transformation as deployment evidence.
+4. Choose an explicit disposition. Apply only with `admit-unverified`, after the review is unblocked and every claimed-origin/custody, role, rationale, policy-reference, and browser-time field has been completed. Record `reject` or `withdraw` when the candidate must not enter the revision.
+5. Treat applied or restored content as diagnostic-only in IN KEEPING. Reconcile the exact bound source and entity scope through the institution's governed authoritative process; a later withdrawal does not make retained content eligible for output.
+6. For the exact clean named saved generation, retain and compare a fresh independent receipt, then generate an ordinary handoff only after the interface's corroborated-continuity, active-evidence, finding, and two-read click-time freshness gates pass. Preserve the lossless native package alongside the approved handoff.
+7. For EAD, AtoM, ArchivesSpace, MARC, MODS, CSL, Schema.org, RIS, or BibTeX delivery, validate the exported artifact in the exact receiving software and version. Record rejected rows, warnings, local templates, and any accepted transformation as deployment evidence.
 
 ## Intentionally unsupported inputs
 

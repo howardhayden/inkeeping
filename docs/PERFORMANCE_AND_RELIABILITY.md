@@ -115,9 +115,11 @@ Reliability depends on what happens at a boundary:
 - A manifest/active digest disagreement stops open; the application does not mask it with a fallback.
 - A valid manifest-bound prior generation opens only as an unsaved recovery copy and does not rewrite/delete stored evidence.
 - Quarantine reconstruction creates a new UUID workspace after a second digest/full-payload verification and leaves the quarantined source unchanged.
+- An authoritative whole-catalog, per-record catalog, archive, service, operational, or Public Notice output requires a clean named session with no pending draft/operation or storage quarantine, no active operator-admitted-unverified evidence or unattributed catalog/archive/service content, and `continuity-corroborated` from an exact independently supplied receipt for the current generation. At activation time the application reopens and validates the saved generation with that receipt, compares its token, payload/state digest, audit head, active revision, anchor, evidence state, and full artifact snapshot with the session, renders from that reopened snapshot rather than the React closure, then repeats the saved-state/receipt/fingerprint checks after construction. Any read, fallback, mismatch, mutation, local-only continuity, stale receipt, or active-evidence failure stops activation.
+- The Technical Report is deliberately diagnostic. It renders the open session and labels its relationship to a named saved copy and continuity checkpoint as current, stale, unsaved, not saved, verified, or failed rather than borrowing authoritative-output status.
 - Report over-capacity failure occurs before file activation. Component exports and the plaintext workspace-backup path remain separate options when their own limits permit.
 
-These properties provide deterministic containment. They do not guarantee power-loss behavior outside the browser's IndexedDB transaction, device durability, malicious-extension resistance, or recovery without a backup.
+These properties provide deterministic containment. They do not guarantee power-loss behavior outside the browser's IndexedDB transaction, device durability, malicious-extension resistance, or recovery without a backup. The two freshness reads and browser file activation are not one atomic transaction: another context can commit immediately after the final read, and a file can therefore become stale immediately after verification. The check establishes correspondence to one exact saved generation at the recorded check instants, not that the file is still latest when a recipient opens, imports, approves, or publishes it.
 
 ## Static asset and cache reliability
 
@@ -153,8 +155,11 @@ Use synthetic fixtures on every supported browser/OS class and at least one inst
 5. maximum accepted list pagination and selection;
 6. archival hierarchy review at the supported depth;
 7. save, reopen, token conflict, bound-prior recovery, and quarantine reconstruction;
-8. Technical Report generation near its accepted boundary; and
-9. keyboard and assistive-technology completion of the same core tasks.
+8. Technical Report generation near its accepted boundary;
+9. authoritative whole-catalog, per-record catalog, archive, service, operational, and Public Notice generation with the cross-tab notification delayed or unavailable, including a second-tab change before the first freshness read and during artifact construction;
+10. storage-read failure, recovery fallback, missing/local-only/failed continuity, stale or missing exact receipt, active admitted/unattributed content, pending draft/operation, storage quarantine, and artifact-snapshot mutation at output activation;
+11. actual new-tab and download behavior after the asynchronous double-open check, including popup/automatic-download policy and the 60-second Blob URL lifetime; and
+12. keyboard and assistive-technology completion of the same core tasks.
 
 Capture median and worst observed duration for repeated synthetic runs, peak browser memory when tooling permits, visible long tasks, crashes, and whether status announcements remain timely. Do not send these measurements from production operators.
 
@@ -175,12 +180,14 @@ When a maximum is safe but operationally slow, document a recommended working si
 | No silent data loss | Round-trip and malformed-line tests | Receiving-software sample when claiming compatibility |
 | Pagination | Shared 100-row unit/interface contracts | Keyboard/selection check on large synthetic lists |
 | Atomic save and stale-tab block | fake-IndexedDB storage tests | Multi-tab smoke test |
+| Authoritative artifact freshness lease | Output-freshness race/error tests and interface contracts | Multi-tab test with delayed notification, before-click and during-construction mutation, and confirmed browser file activation |
+| Evidence and continuity output gates | Evidence-authority, continuity-anchor, output-freshness, and interface tests | Reviewer verifies operator-admitted-unverified evidence, imported catalogs without a bound authority record, and missing/mismatched checkpoints block authoritative output without obscuring the diagnostic routes |
 | Bound prior recovery | Storage corruption/digest tests | Quarterly recovery drill |
 | Explicit quarantine reconstruction | Inspection/reconstruction tests | Quarterly synthetic drill |
 | Plaintext backup contract | Envelope/digest/version tests | Protected destination and restore drill |
 | Report boundary/redaction | Report document tests | Open/download/layout/accessibility check |
 
-Automation is necessary but cannot establish Cloudflare account settings, browser eviction policy, DNS/mail continuity, assistive-technology usability, receiving-system behavior, or institutional handling of downloaded files.
+Automation is necessary but cannot establish Cloudflare account settings, browser eviction policy, DNS/mail continuity, assistive-technology usability, receiving-system behavior, or institutional handling of downloaded files. It also cannot make IndexedDB verification and browser/OS file activation atomic, observe that a programmatic anchor activation produced a durable file, or establish that a previously generated artifact remains current later.
 
 ## Availability and continuity
 

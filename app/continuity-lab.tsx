@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   activeRevision,
+  assessActiveEvidence,
   applyArchiveImport,
   applyImport,
   checkRecords,
@@ -15,7 +16,7 @@ import {
   rollbackTo,
   forkWorkspace,
   recordWorkspaceAction,
-  reviewedSourceAuditTarget,
+  recordEvidenceDisposition,
   removeServiceRecord,
   renameWorkspace,
   removeArchiveSchema,
@@ -26,25 +27,29 @@ import {
   upsertArchiveSchema,
   upsertArchiveUnit,
   upsertServiceRecord,
-  verifyAudit,
+  validateWorkspaceSnapshot,
   type CatalogRecord,
   type CatalogRecordPatch,
   type ImportReview,
   type Incident,
   type LabConfig,
   type DocumentKind,
+  type EvidenceDispositionInput,
   type RecordElement,
   type Workspace,
 } from "./lab-core";
 import {
   clearLocalWorkspaces,
+  corroborateLocalContinuityReceipt,
   createLocalWorkspace,
   deleteLocalWorkspace,
   getLocalStorageStatus,
   inspectLocalWorkspaceRecoveryCandidate,
+  initializeLocalContinuityAnchor,
   listLocalWorkspaces,
   LocalWorkspaceQuarantineError,
   openLocalWorkspace,
+  makeLocalContinuityReceipt,
   reconstructLocalWorkspaceFromQuarantine,
   requestDurableStorage,
   saveLocalWorkspace,
@@ -53,15 +58,22 @@ import {
   type LocalWorkspaceManifest,
   type LocalWorkspaceRecoveryCandidate,
   type LocalWorkspaceStorageInspection,
+  type LocalContinuityAcceptanceInput,
 } from "./lab-storage";
 import { DATA_FORMAT_RULES, EXCHANGE_FORMATS, RECORD_FORMATS, exchangeFilename, exchangeMime, formatRecords, type ExchangeFormat } from "./record-formats";
 import { ARCHIVE_EXCHANGE_FORMATS, ARCHIVE_FIELD_KINDS, ARCHIVE_LEVELS, ARCHIVE_PROFILES, ARCHIVE_RECORD_TYPES, archiveFilename, archiveMime, formatArchive, makeArchiveSchema, normalizeArchiveEditorValues, parseOneValuePerLine, parseOneValuePerLineDraft, reviewArchiveImport, type ArchiveField, type ArchiveImportReview, type ArchiveProfile, type ArchiveRecordType, type ArchiveSchema, type ArchiveUnit, type ArchiveValue, type ArchiveExchangeFormat } from "./archival-schemas";
 import { makePublicNoticeHtml, makeTechnicalReportHtml, PUBLIC_NOTICE_FILENAME, REPORT_MIME, TECHNICAL_REPORT_FILENAME } from "./report-documents.ts";
 import { SERVICE_AREAS, SERVICE_RECORD_DEFINITIONS, formatServiceRegister, makeServiceRecord, serviceDefinition, serviceFilename, serviceMime, type ServiceArea, type ServiceFieldDefinition, type ServiceRecord, type ServiceValue } from "./service-register";
-import { makeWorkspaceBackup, reviewWorkspaceBackup, workspaceBackupFilename, WORKSPACE_BACKUP_MIME, type WorkspaceBackupReview } from "./workspace-backups";
+import { makeWorkspaceBackup, reviewWorkspaceBackup, verifyWorkspaceBackupReviewBinding, workspaceBackupFilename, WORKSPACE_BACKUP_MIME, type WorkspaceBackupReview } from "./workspace-backups";
 import { pageContaining, paginate, type PageSlice } from "./list-pagination";
+import { verifyOutputFreshness, type OutputFreshnessLease, type OutputFreshnessMode } from "./output-freshness.ts";
+import { CONTINUITY_ACKNOWLEDGMENT, type ContinuityVerification } from "./continuity-anchor.ts";
+import { canonicalDigest as canonicalEvidenceDigest, EVIDENCE_TIME_BASIS } from "./evidence-authority.ts";
 
 type View = "overview" | "records" | "services" | "archives" | "incidents" | "changes" | "reports";
+type OutputGate = { blocked: boolean; reason: string };
+type ArtifactFreshnessVerifier = (mode: OutputFreshnessMode) => Promise<OutputFreshnessLease>;
+type ActiveLocalSession = { id: string; token: string; savedAt: string; continuity: ContinuityVerification; independentReceipt: string | null };
 
 type DraftGuardValue = {
   register: (id: string, dirty: boolean, reset: () => void) => void;
@@ -73,13 +85,21 @@ const DraftGuardContext = createContext<DraftGuardValue>({
   confirmDiscard: () => true,
 });
 
+const ArtifactFreshnessContext = createContext<ArtifactFreshnessVerifier>(async () => {
+  throw new Error("Artifact freshness verification is unavailable.");
+});
+
+function useArtifactFreshness(): ArtifactFreshnessVerifier {
+  return useContext(ArtifactFreshnessContext);
+}
+
 function useDraftRegistration(dirty: boolean, reset: () => void): string {
   const id = useId();
   const { register } = useContext(DraftGuardContext);
   const resetRef = useRef(reset);
   useEffect(() => { resetRef.current = reset; }, [reset]);
   const resetCurrent = useCallback(() => resetRef.current(), []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     register(id, dirty, resetCurrent);
     return () => register(id, false, resetCurrent);
   }, [dirty, id, register, resetCurrent]);
@@ -126,7 +146,7 @@ export function ContinuityLab() {
   const [notice, setNotice] = useState("");
   const [localWorkspaces, setLocalWorkspaces] = useState<LocalWorkspaceManifest[]>([]);
   const [storageInspection, setStorageInspection] = useState<LocalWorkspaceStorageInspection | null>(null);
-  const [activeLocal, setActiveLocal] = useState<{ id: string; token: string; savedAt: string } | null>(null);
+  const [activeLocal, setActiveLocal] = useState<ActiveLocalSession | null>(null);
   const [storageStatus, setStorageStatus] = useState<LocalStorageStatus>({ supported: true, persisted: null, usage: null, quota: null });
   const [dirty, setDirty] = useState(false);
   const [auditState, setAuditState] = useState<"idle" | "valid" | "invalid">("idle");
@@ -135,6 +155,8 @@ export function ContinuityLab() {
   const mainRef = useRef<HTMLElement>(null);
   const operationActive = useRef(false);
   const sessionVersion = useRef(0);
+  const storageVersion = useRef(0);
+  const storageQuarantined = useRef(false);
   const draftEditors = useRef(new Map<string, () => void>());
   const [hasDraftChanges, setHasDraftChanges] = useState(false);
   const registerDraft = useCallback((id: string, isDirty: boolean, reset: () => void) => {
@@ -154,6 +176,12 @@ export function ContinuityLab() {
     return true;
   }, []);
   const draftGuard = useMemo(() => ({ register: registerDraft, confirmDiscard: confirmDraftDiscard }), [confirmDraftDiscard, registerDraft]);
+  const applyLocalWorkspaceListing = useCallback((listing: { workspaces: LocalWorkspaceManifest[]; inspection: LocalWorkspaceStorageInspection | null }) => {
+    storageVersion.current += 1;
+    storageQuarantined.current = Boolean(listing.inspection?.quarantine.length);
+    setLocalWorkspaces(listing.workspaces);
+    setStorageInspection(listing.inspection);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -167,26 +195,24 @@ export function ContinuityLab() {
       .catch(() => setNotice("Workspace could not be initialized."));
     readLocalWorkspaceListing().then((listing) => {
       if (!active) return;
-      setLocalWorkspaces(listing.workspaces);
-      setStorageInspection(listing.inspection);
+      applyLocalWorkspaceListing(listing);
       if (listing.inspection) setNotice("Browser-local storage requires inspection before ordinary saves can continue.");
     }).catch(() => { if (active) setNotice("Browser workspace storage is unavailable."); });
     getLocalStorageStatus().then((status) => { if (active) setStorageStatus(status); }).catch(() => { if (active) setStorageStatus({ supported: false, persisted: null, usage: null, quota: null }); });
     const unsubscribe = subscribeLocalWorkspaceChanges(() => {
       readLocalWorkspaceListing().then((listing) => {
         if (!active) return;
-        setLocalWorkspaces(listing.workspaces);
-        setStorageInspection(listing.inspection);
+        applyLocalWorkspaceListing(listing);
       }).catch(() => undefined);
     });
     return () => { active = false; unsubscribe(); };
-  }, []);
+  }, [applyLocalWorkspaceListing]);
 
   useEffect(() => {
     if (!workspace) return;
     let active = true;
-    verifyAudit(workspace)
-      .then((valid) => { if (active) setAuditState(valid ? "valid" : "invalid"); })
+    validateWorkspaceSnapshot(workspace)
+      .then(() => { if (active) setAuditState("valid"); })
       .catch(() => { if (active) setAuditState("invalid"); });
     return () => { active = false; };
   }, [workspace]);
@@ -230,6 +256,50 @@ export function ContinuityLab() {
   const selectedIncident = workspace?.incidents.find((incident) => incident.id === selectedIncidentId) ?? workspace?.incidents[0];
   const activeManifest = activeLocal ? localWorkspaces.find((item) => item.id === activeLocal.id) : undefined;
   const activeLocalStale = Boolean(activeLocal && (!activeManifest || activeManifest.token !== activeLocal.token));
+  const blockingFindings = findings.filter((finding) => finding.severity === "error" || finding.severity === "warning");
+  const sampleContaminated = Boolean(workspace && (workspace.incidents.some((incident) => incident.synthetic) || records.some((record) => record.source.format === "fixture")));
+  const activeEvidence = workspace ? assessActiveEvidence(workspace) : null;
+  const outputGate: OutputGate = sampleContaminated
+    ? { blocked: true, reason: "Ordinary compatibility and operational outputs are blocked because this workspace contains Sample data. Use the Technical Report or a plaintext workspace backup for review, or begin blank for production work." }
+    : !activeLocal
+      ? { blocked: true, reason: "Ordinary outward artifacts require a named, saved workspace so the exact saved generation can be rechecked when the file is created." }
+      : activeLocal.continuity.status !== "continuity-corroborated" || !activeLocal.independentReceipt
+        ? { blocked: true, reason: `Ordinary outward artifacts require this exact saved generation to be rechecked against an independently retained current receipt. ${activeLocal.continuity.reason}` }
+      : activeEvidence?.blocked
+        ? { blocked: true, reason: `Ordinary outward artifacts are blocked by active unverified or unattributed content. ${activeEvidence.reason} Use the Technical Report or workspace backup for review; no local parser or continuity checkpoint can grant this content authority.` }
+      : busy
+        ? { blocked: true, reason: "Ordinary outward artifacts wait until the current workspace operation finishes." }
+      : hasDraftChanges
+        ? { blocked: true, reason: "Save or discard every visible form draft before generating ordinary outward artifacts; drafts are not part of the named saved generation." }
+      : dirty
+        ? { blocked: true, reason: "Save the current workspace before generating ordinary outward artifacts so the exact saved generation can be rechecked." }
+        : activeLocalStale
+          ? { blocked: true, reason: "Outputs are blocked because the named saved workspace changed in another tab. Reload it or deliberately duplicate this session before generating artifacts." }
+          : storageInspection
+            ? { blocked: true, reason: "Ordinary outward artifacts are blocked while browser-local storage is quarantined for inspection." }
+            : auditState !== "valid"
+              ? { blocked: true, reason: auditState === "invalid" ? "Outputs are blocked because full workspace validation failed." : "Outputs wait for the full workspace validation check to finish." }
+              : blockingFindings.length > 0
+                ? { blocked: true, reason: "Compatibility and operational outputs are blocked while error or warning metadata findings remain. Informational duplicate notices remain visible in the Technical Report but do not permanently disable export." }
+                : { blocked: false, reason: "" };
+
+  const verifyOutwardArtifact = useCallback<ArtifactFreshnessVerifier>((mode) => {
+    if (!workspace) return Promise.reject(new Error("The workspace is unavailable."));
+    const expectedSessionVersion = sessionVersion.current;
+    const expectedStorageVersion = storageVersion.current;
+    return verifyOutputFreshness(workspace, {
+      activeLocal,
+      dirty,
+      expectedSessionVersion,
+      getSessionVersion: () => sessionVersion.current,
+      getPendingDrafts: () => draftEditors.current.size > 0,
+      getOperationInProgress: () => operationActive.current,
+      expectedStorageVersion,
+      getStorageVersion: () => storageVersion.current,
+      getStorageQuarantined: () => storageQuarantined.current,
+      openWorkspace: (id) => openLocalWorkspace(id, activeLocal?.independentReceipt ?? null),
+    }, mode);
+  }, [activeLocal, dirty, workspace]);
 
   function changeView(next: View) {
     if (next === view) return true;
@@ -242,7 +312,7 @@ export function ContinuityLab() {
     return true;
   }
 
-  function replaceSession(next: Workspace, local: { id: string; token: string; savedAt: string } | null, hasUnsavedChanges: boolean) {
+  function replaceSession(next: Workspace, local: ActiveLocalSession | null, hasUnsavedChanges: boolean) {
     sessionVersion.current += 1;
     setWorkspace(next);
     setActiveLocal(local);
@@ -263,8 +333,7 @@ export function ContinuityLab() {
 
   async function refreshLocalWorkspaces() {
     const listing = await readLocalWorkspaceListing();
-    setLocalWorkspaces(listing.workspaces);
-    setStorageInspection(listing.inspection);
+    applyLocalWorkspaceListing(listing);
     setStorageStatus(await getLocalStorageStatus());
   }
 
@@ -298,13 +367,13 @@ export function ContinuityLab() {
     });
   }
 
-  async function applyReviewedImport() {
+  async function applyReviewedImport(disposition: EvidenceDispositionInput) {
     if (!workspace || !review) return;
     await runBusy(async () => {
-      const next = await applyImport(workspace, review);
+      const next = await applyImport(workspace, review, disposition);
       updateSession(next, next.activeRevisionId === workspace.activeRevisionId
         ? "Import rejected without changing trusted records. Review the source, provenance, limits, and identifier conflicts."
-        : "Reviewed records applied as one revision.");
+        : "Reviewed records applied as unverified evidence in one revision; the operator claim does not establish truth or authority.");
       setReview(null);
       if (fileRef.current) fileRef.current.value = "";
       setImportOpen(false);
@@ -330,7 +399,7 @@ export function ContinuityLab() {
     return runBusy(async () => {
       const next = await prepareLocalWorkspace(workspace, name);
       const manifest = await createLocalWorkspace(next);
-      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt }, false);
+      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity: { status: "unanchored", reason: "Explicitly accept a local continuity baseline before ordinary outward use.", anchorDigest: null }, independentReceipt: null }, false);
       await refreshLocalWorkspaces();
       setNotice(`Created and saved “${manifest.name}” in this browser.`);
     });
@@ -343,9 +412,44 @@ export function ContinuityLab() {
       const atCapacity = workspace.audit.length >= MAX_AUDIT_EVENTS;
       const next = atCapacity ? workspace : await recordWorkspaceAction(workspace, "Save local workspace");
       const manifest = await saveLocalWorkspace(activeLocal.id, next, activeLocal.token);
-      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt }, false);
+      const reopened = await openLocalWorkspace(activeLocal.id);
+      const continuity = reopened.token === manifest.token
+        ? reopened.continuity
+        : { status: "continuity-failure" as const, reason: "The named workspace changed again immediately after this save. Reload it before continuity comparison.", anchorDigest: null };
+      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null }, false);
       await refreshLocalWorkspaces();
-      setNotice(atCapacity ? `Changes saved to “${manifest.name}”. Its audit ledger is full; create a successor workspace before making another change.` : `Changes saved to “${manifest.name}”.`);
+      setNotice(atCapacity
+        ? `Changes saved to “${manifest.name}”. Independent receipt corroboration was cleared. Its audit ledger is full; create a new successor workspace/lineage and explicitly accept a new baseline.`
+        : `Changes saved to “${manifest.name}”. Independent receipt corroboration was cleared; retain and compare a fresh receipt for this generation before ordinary output.`);
+    });
+  }
+
+  async function acceptContinuityBaseline(input: LocalContinuityAcceptanceInput) {
+    if (!activeLocal || !workspace || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before accepting a continuity baseline.");
+    return runBusy(async () => {
+      const continuity = await initializeLocalContinuityAnchor(activeLocal.id, activeLocal.token, input);
+      setActiveLocal({ ...activeLocal, continuity, independentReceipt: null });
+      setNotice("Local continuity baseline accepted and bound to this saved generation. This does not establish authenticity, identity, custody, completeness, authority, or trusted time. Download, separately retain, and compare its receipt before ordinary output.");
+    });
+  }
+
+  async function downloadContinuityReceipt() {
+    if (!activeLocal) throw new Error("Open a named saved workspace before downloading a continuity receipt.");
+    return runBusy(async () => {
+      const text = await makeLocalContinuityReceipt(activeLocal.id, activeLocal.token);
+      downloadText(`${workspace?.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "workspace"}.in-keeping-continuity-receipt.json`, text, "application/json");
+      setNotice("Continuity receipt downloaded. Retain it independently and compare this exact file before ordinary output; a receipt kept only beside the workspace cannot detect coherent replacement of both.");
+    });
+  }
+
+  async function compareContinuityReceipt(file: File) {
+    if (!activeLocal || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before comparing an independent receipt.");
+    return runBusy(async () => {
+      if (file.size < 1 || file.size > 16 * 1024) throw new Error("Continuity receipt must be nonempty JSON no larger than 16 KiB.");
+      const serialized = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      const continuity = await corroborateLocalContinuityReceipt(activeLocal.id, activeLocal.token, serialized);
+      setActiveLocal({ ...activeLocal, continuity, independentReceipt: serialized });
+      setNotice("The independently supplied receipt corroborates this exact saved checkpoint. This still does not establish authenticity, evidence truth, identity, custody, authority, completeness, or trusted time.");
     });
   }
 
@@ -354,9 +458,9 @@ export function ContinuityLab() {
     return runBusy(async () => {
       const opened = await openLocalWorkspace(id);
       if (!opened.recoveredFromPrevious) {
-        replaceSession(opened.workspace, { id, token: opened.token, savedAt: opened.manifest.savedAt }, false);
+        replaceSession(opened.workspace, { id, token: opened.token, savedAt: opened.manifest.savedAt, continuity: opened.continuity, independentReceipt: null }, false);
         await refreshLocalWorkspaces();
-        setNotice(`Opened “${opened.manifest.name}”.`);
+        setNotice(`Opened “${opened.manifest.name}”. Receipt corroboration is not restored from browser state; compare the exact current receipt before ordinary output.`);
         return;
       }
       replaceSession(opened.workspace, null, true);
@@ -376,9 +480,15 @@ export function ContinuityLab() {
       if (recovered) throw new Error("This saved workspace requires recovery. Open its verified recovery copy, then create a new workspace with the required name.");
       const next = await renameWorkspace(source, name, "Rename workspace");
       const manifest = await saveLocalWorkspace(id, next, expectedToken);
-      if (activeLocal?.id === id) replaceSession(next, { id, token: manifest.token, savedAt: manifest.savedAt }, false);
+      if (activeLocal?.id === id) {
+        const reopened = await openLocalWorkspace(id);
+        const continuity = reopened.token === manifest.token
+          ? reopened.continuity
+          : { status: "continuity-failure" as const, reason: "The named workspace changed again immediately after this rename. Reload it before continuity comparison.", anchorDigest: null };
+        replaceSession(next, { id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null }, false);
+      }
       await refreshLocalWorkspaces();
-      setNotice(`Renamed the local workspace to “${manifest.name}”.`);
+      setNotice(`Renamed the local workspace to “${manifest.name}”. Receipt corroboration was cleared; retain and compare a fresh receipt for this generation before ordinary output.`);
     });
   }
 
@@ -400,6 +510,7 @@ export function ContinuityLab() {
     return runBusy(async () => {
       await deleteLocalWorkspace(id, activeLocal?.id === id ? activeLocal.token : manifest.token);
       if (activeLocal?.id === id && workspace) {
+        sessionVersion.current += 1;
         setActiveLocal(null);
         setDirty(true);
       }
@@ -412,6 +523,7 @@ export function ContinuityLab() {
     if (!confirm("Delete every saved local workspace from this browser? The current session will remain open but will no longer be saved locally. Exported files will not be affected.")) return;
     await runBusy(async () => {
       await clearLocalWorkspaces();
+      sessionVersion.current += 1;
       setActiveLocal(null);
       setDirty(true);
       await refreshLocalWorkspaces();
@@ -419,20 +531,52 @@ export function ContinuityLab() {
     });
   }
 
-  async function openBackup(reviewed: WorkspaceBackupReview) {
-    if (!reviewed.workspace || reviewed.blocked) return false;
+  async function openBackup(reviewed: WorkspaceBackupReview, disposition: EvidenceDispositionInput) {
+    if (!workspace) {
+      setNotice("The current workspace is unavailable; review the backup again after initialization completes.");
+      return false;
+    }
+    if (!reviewed.workspace || reviewed.blocked || !await verifyWorkspaceBackupReviewBinding(reviewed)) {
+      setNotice("The workspace-backup review binding is missing or changed. Review the source file again before opening it.");
+      return false;
+    }
+    const evidence = {
+      source: { kind: "workspace-backup" as const, filename: reviewed.filename, format: "workspace-backup-v2", bytes: reviewed.bytes, sha256: reviewed.digest },
+      review: { structuralStatus: "passed" as const, canonicalPayloadSha256: await canonicalEvidenceDigest(reviewed.workspace), parserProfile: "workspace-backup-v2" },
+      scope: { kind: "workspace" as const, entityIds: [reviewed.workspace.activeRevisionId] },
+    };
+    if (disposition.decision !== "admit-unverified") {
+      return runBusy(async () => {
+        const next = await recordEvidenceDisposition(
+          workspace,
+          evidence,
+          disposition,
+          disposition.decision === "withdraw" ? "Withdraw reviewed workspace backup" : "Reject reviewed workspace backup",
+          {
+            outcome: "not-applied",
+            reason: disposition.decision === "withdraw" ? "operator-withdrew" : "operator-rejected",
+            detail: disposition.decision === "withdraw" ? "The reviewed backup was withdrawn and did not replace the current session." : "The reviewed backup was rejected and did not replace the current session.",
+            resultingRevisionId: null,
+            resultingRevisionDigest: null,
+          },
+        );
+        updateSession(next, `The reviewed backup was ${disposition.decision === "withdraw" ? "withdrawn" : "rejected"}; its exact disposition and non-application outcome remain in this workspace.`);
+      });
+    }
     if (!confirmDraftDiscard("Open this workspace backup? Current changes will be lost.", dirty)) return false;
     const expectedSessionVersion = sessionVersion.current;
     return runBusy(async () => {
-      const atCapacity = reviewed.workspace!.audit.length >= MAX_AUDIT_EVENTS;
-      const next = atCapacity
-        ? reviewed.workspace!
-        : await recordWorkspaceAction(reviewed.workspace!, "Open reviewed workspace backup", reviewedSourceAuditTarget({ filename: reviewed.filename, format: "workspace-backup", digest: reviewed.digest }));
+      if (reviewed.workspace!.audit.length >= MAX_AUDIT_EVENTS) throw new Error("The reviewed backup audit ledger is full. Preserve it for diagnosis and create an explicitly accepted successor before continuing.");
+      const next = await recordEvidenceDisposition(reviewed.workspace!, evidence, disposition, "Open workspace backup as unverified evidence", {
+        outcome: "applied",
+        reason: "workspace-backup-opened",
+        detail: "The reviewed backup replaced the working session as unverified evidence; it did not become authoritative.",
+        resultingRevisionId: reviewed.workspace!.activeRevisionId,
+        resultingRevisionDigest: activeRevision(reviewed.workspace!).digest,
+      });
       if (sessionVersion.current !== expectedSessionVersion) throw new Error("The current session changed while the backup was opening. Review the backup again before replacing it.");
       replaceSession(next, null, true);
-      setNotice(atCapacity
-        ? `Opened “${next.name}”. Its audit ledger is full; keep the source backup and create a successor workspace to continue.`
-        : `Opened “${next.name}”. Create a local workspace to retain it in this browser.`);
+      setNotice(`Opened “${next.name}” as explicitly unverified evidence. Create a local workspace and separately accept a continuity baseline to retain and use it in this browser.`);
     });
   }
 
@@ -441,6 +585,7 @@ export function ContinuityLab() {
   }
 
   return (
+    <ArtifactFreshnessContext.Provider value={verifyOutwardArtifact}>
     <DraftGuardContext.Provider value={draftGuard}>
     <div className="app-shell">
       <a className="skip-link" href="#main">Skip to main content</a>
@@ -478,6 +623,7 @@ export function ContinuityLab() {
 
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{notice}</div>
       {notice && <div className="notice-bar"><span>{notice}</span><button type="button" className="icon-button" aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
+      {activeLocalStale && <div className="workspace-stale" role="alert"><strong>Saved version changed</strong><span>Another tab changed or removed the named saved workspace. Saving and outward outputs are blocked; open Reports to reload the saved version or deliberately duplicate this session. The current session remains available for a conflict-recovery backup.</span></div>}
 
       <main ref={mainRef} id="main" className="main-area" tabIndex={-1}>
         {view === "overview" && (
@@ -493,6 +639,7 @@ export function ContinuityLab() {
             query={query}
             format={format}
             formats={formats}
+            outputGate={outputGate}
             onQuery={setQuery}
             onFormat={setFormat}
             onSelect={setSelectedRecordId}
@@ -516,6 +663,7 @@ export function ContinuityLab() {
           <ServicesView
             records={revision.serviceRecords ?? []}
             busy={busy}
+            outputGate={outputGate}
             onSave={async (record) => runBusy(async () => updateSession(await upsertServiceRecord(workspace, record), "Service register record saved as a reversible revision."))}
             onRemove={async (id) => runBusy(async () => updateSession(await removeServiceRecord(workspace, id), "Service register record removed in a reversible revision."))}
           />
@@ -536,11 +684,17 @@ export function ContinuityLab() {
           <ArchivesView
             workspace={workspace}
             busy={busy}
+            outputGate={outputGate}
             onSaveSchema={async (schema) => runBusy(async () => updateSession(await upsertArchiveSchema(workspace, schema), "Archival schema saved as a reversible revision."))}
             onRemoveSchema={async (id) => runBusy(async () => updateSession(await removeArchiveSchema(workspace, id), "Archival schema removed in a reversible revision."))}
             onSaveUnit={async (unit) => runBusy(async () => updateSession(await upsertArchiveUnit(workspace, unit), "Archival record saved as a reversible revision."))}
             onRemoveUnit={async (id) => runBusy(async () => updateSession(await removeArchiveUnit(workspace, id), "Archival record removed in a reversible revision."))}
-            onApplyImport={async (schema, units, source) => runBusy(async () => updateSession(await applyArchiveImport(workspace, schema, units, source), "Reviewed archival records applied as one revision."))}
+            onApplyImport={async (source, disposition) => runBusy(async () => {
+              const next = await applyArchiveImport(workspace, source, disposition);
+              updateSession(next, next.activeRevisionId === workspace.activeRevisionId
+                ? "The archival evidence disposition was retained, but destination validation prevented application."
+                : "Reviewed archival records applied as unverified evidence in one revision.");
+            })}
           />
         )}
         {view === "changes" && (
@@ -565,6 +719,7 @@ export function ContinuityLab() {
           <ReportsView
             workspace={workspace}
             auditState={auditState}
+            outputGate={outputGate}
             busy={busy}
             localWorkspaces={localWorkspaces}
             activeLocal={activeLocal}
@@ -573,6 +728,9 @@ export function ContinuityLab() {
             storageInspection={storageInspection}
             onCreate={createNamedWorkspace}
             onSave={saveCurrentWorkspace}
+            onAcceptContinuity={acceptContinuityBaseline}
+            onDownloadContinuityReceipt={downloadContinuityReceipt}
+            onCompareContinuityReceipt={compareContinuityReceipt}
             onOpen={openNamedWorkspace}
             onRename={renameNamedWorkspace}
             onDuplicate={duplicateNamedWorkspace}
@@ -587,9 +745,14 @@ export function ContinuityLab() {
             onNotice={setNotice}
             onReset={() => resetWorkspace(false)}
             onVerify={async () => {
-              const valid = await verifyAudit(workspace);
-              setAuditState(valid ? "valid" : "invalid");
-              setNotice(valid ? "Workspace data is internally consistent." : "Workspace integrity mismatch detected.");
+              try {
+                await validateWorkspaceSnapshot(workspace);
+                setAuditState("valid");
+                setNotice("Full workspace structure and internal consistency verified. This does not prove authenticity, authorship, custody, completeness, authority, or trusted time.");
+              } catch {
+                setAuditState("invalid");
+                setNotice("Workspace integrity mismatch detected.");
+              }
             }}
             onRefreshStorage={refreshLocalWorkspaces}
           />
@@ -597,6 +760,7 @@ export function ContinuityLab() {
       </main>
     </div>
     </DraftGuardContext.Provider>
+    </ArtifactFreshnessContext.Provider>
   );
 }
 
@@ -650,12 +814,14 @@ function Overview({
   );
 }
 
-function ServicesView({ records, busy, onSave, onRemove }: { records: ServiceRecord[]; busy: boolean; onSave: (record: ServiceRecord) => Promise<boolean>; onRemove: (id: string) => Promise<boolean> }) {
+function ServicesView({ records, busy, outputGate, onSave, onRemove }: { records: ServiceRecord[]; busy: boolean; outputGate: OutputGate; onSave: (record: ServiceRecord) => Promise<boolean>; onRemove: (id: string) => Promise<boolean> }) {
   const [area, setArea] = useState<ServiceArea | "all">("all");
   const [selectedId, setSelectedId] = useState(records[0]?.id ?? "");
   const [newKind, setNewKind] = useState(SERVICE_RECORD_DEFINITIONS[0].kind);
   const [draft, setDraft] = useState<ServiceRecord | null>(null);
   const [page, setPage] = useState(0);
+  const [outputError, setOutputError] = useState("");
+  const verifyFreshness = useArtifactFreshness();
   const { confirmDiscard } = useContext(DraftGuardContext);
   const visible = area === "all" ? records : records.filter((record) => record.area === area);
   const selected = draft ?? visible.find((record) => record.id === selectedId) ?? visible[0] ?? null;
@@ -675,15 +841,29 @@ function ServicesView({ records, busy, onSave, onRemove }: { records: ServiceRec
     setPage(0);
   }
 
+  async function deliverServiceRegister(format: "service-json" | "service-csv") {
+    setOutputError("");
+    try {
+      if (outputGate.blocked) throw new Error(outputGate.reason);
+      const lease = await verifyFreshness("authoritative");
+      const text = formatServiceRegister(activeRevision(lease.artifactWorkspace).serviceRecords ?? [], format);
+      await lease.recheck();
+      downloadText(serviceFilename("in-keeping", format), text, serviceMime(format));
+    } catch (error) {
+      setOutputError(error instanceof Error ? error.message : "The service register could not be exported safely.");
+    }
+  }
+
   return (
     <section aria-labelledby="services-title">
       <div className="page-heading">
         <div><p className="eyebrow">Cross-department registers</p><h1 id="services-title">Services</h1></div>
         <div className="service-export-actions">
-          <button type="button" className="secondary-button" onClick={() => downloadText(serviceFilename("in-keeping", "service-json"), formatServiceRegister(records, "service-json"), serviceMime("service-json"))}>Export JSON</button>
-          <button type="button" className="secondary-button" onClick={() => downloadText(serviceFilename("in-keeping", "service-csv"), formatServiceRegister(records, "service-csv"), serviceMime("service-csv"))}>Export CSV</button>
+          <button type="button" className="secondary-button" disabled={outputGate.blocked} aria-describedby={outputGate.blocked || outputError ? "service-output-blocked" : undefined} onClick={() => { void deliverServiceRegister("service-json"); }}>Export JSON</button>
+          <button type="button" className="secondary-button" disabled={outputGate.blocked} aria-describedby={outputGate.blocked || outputError ? "service-output-blocked" : undefined} onClick={() => { void deliverServiceRegister("service-csv"); }}>Export CSV</button>
         </div>
       </div>
+      {(outputGate.blocked || outputError) && <p id="service-output-blocked" className="field-error" role={outputError ? "alert" : undefined}>{outputError || outputGate.reason}</p>}
       <div className="service-coverage" aria-label="Service register coverage">
         <button type="button" className={area === "all" ? "active" : ""} aria-pressed={area === "all"} onClick={() => { if (area === "all" || !confirmDiscard()) return; setArea("all"); setDraft(null); setPage(0); }}><strong>{records.length}</strong><span>All registers</span></button>
         {SERVICE_AREAS.map((item) => {
@@ -782,7 +962,7 @@ function normalizeServiceDraft(record: ServiceRecord, fields: ServiceFieldDefini
   return { ...record, title: record.title.trim(), ownerRole: record.ownerRole.trim(), system: record.system.trim(), values, updatedAt: new Date().toISOString() };
 }
 
-function ArchivesView({ workspace, busy, onSaveSchema, onRemoveSchema, onSaveUnit, onRemoveUnit, onApplyImport }: { workspace: Workspace; busy: boolean; onSaveSchema: (schema: ArchiveSchema) => Promise<boolean>; onRemoveSchema: (id: string) => Promise<boolean>; onSaveUnit: (unit: ArchiveUnit) => Promise<boolean>; onRemoveUnit: (id: string) => Promise<boolean>; onApplyImport: (schema: ArchiveSchema, units: ArchiveUnit[], source: ArchiveImportReview) => Promise<boolean> }) {
+function ArchivesView({ workspace, busy, outputGate, onSaveSchema, onRemoveSchema, onSaveUnit, onRemoveUnit, onApplyImport }: { workspace: Workspace; busy: boolean; outputGate: OutputGate; onSaveSchema: (schema: ArchiveSchema) => Promise<boolean>; onRemoveSchema: (id: string) => Promise<boolean>; onSaveUnit: (unit: ArchiveUnit) => Promise<boolean>; onRemoveUnit: (id: string) => Promise<boolean>; onApplyImport: (source: ArchiveImportReview, disposition: EvidenceDispositionInput) => Promise<boolean> }) {
   const revision = activeRevision(workspace);
   const schemas = revision.archiveSchemas ?? [];
   const units = revision.archiveUnits ?? [];
@@ -843,21 +1023,22 @@ function ArchivesView({ workspace, busy, onSaveSchema, onRemoveSchema, onSaveUni
               />
             </label>
             {importError && <p id="archive-import-error" className="field-error" role="alert">{importError}</p>}
-            {archiveReview && <div className={archiveReview.blocked ? "archive-review blocked" : "archive-review ready"} role={archiveReview.blocked ? "alert" : "status"} aria-atomic="true"><strong>{archiveReview.format}</strong><span>{archiveReview.summary}</span>{!archiveReview.blocked && archiveReview.schema && <button type="button" disabled={busy} onClick={async () => { if (!confirmDiscard()) return; if (await onApplyImport(archiveReview.schema!, archiveReview.units, archiveReview)) { setSelectedId(archiveReview.schema!.id); setArchiveReview(null); } }}>Apply</button>}</div>}
+            {archiveReview && <div className={archiveReview.blocked ? "archive-review blocked" : "archive-review ready"} role={archiveReview.blocked ? "alert" : "status"} aria-atomic="true"><strong>{archiveReview.format}</strong><span>{archiveReview.summary}</span>{!archiveReview.blocked && archiveReview.schema && <EvidenceDispositionForm busy={busy} onSubmit={async (disposition) => { if (disposition.decision === "admit-unverified" && !confirmDiscard()) return; if (await onApplyImport(archiveReview, disposition)) { if (disposition.decision === "admit-unverified") setSelectedId(archiveReview.schema!.id); setArchiveReview(null); } }} />}</div>}
           </div>
         </aside>
         <div className="schema-stage">
-          {selected ? <SchemaEditor key={`${selected.id}-${selected.version}`} schema={selected} units={units.filter((item) => item.schemaId === selected.id)} allUnits={units} busy={busy} onSave={onSaveSchema} onRemove={onRemoveSchema} onSaveUnit={onSaveUnit} onRemoveUnit={onRemoveUnit} /> : <div className="archive-empty"><p>No archival schema yet.</p><small>Create a local profile or import an EAD, ArchivesSpace, AtoM, or schema-package file.</small></div>}
+          {selected ? <SchemaEditor key={`${selected.id}-${selected.version}`} schema={selected} units={units.filter((item) => item.schemaId === selected.id)} allUnits={units} busy={busy} outputGate={outputGate} onSave={onSaveSchema} onRemove={onRemoveSchema} onSaveUnit={onSaveUnit} onRemoveUnit={onRemoveUnit} /> : <div className="archive-empty"><p>No archival schema yet.</p><small>Create a local profile or import an EAD, ArchivesSpace, AtoM, or schema-package file.</small></div>}
         </div>
       </div>
     </section>
   );
 }
 
-function SchemaEditor({ schema, units, allUnits, busy, onSave, onRemove, onSaveUnit, onRemoveUnit }: { schema: ArchiveSchema; units: ArchiveUnit[]; allUnits: ArchiveUnit[]; busy: boolean; onSave: (schema: ArchiveSchema) => Promise<boolean>; onRemove: (id: string) => Promise<boolean>; onSaveUnit: (unit: ArchiveUnit) => Promise<boolean>; onRemoveUnit: (id: string) => Promise<boolean> }) {
+function SchemaEditor({ schema, units, allUnits, busy, outputGate, onSave, onRemove, onSaveUnit, onRemoveUnit }: { schema: ArchiveSchema; units: ArchiveUnit[]; allUnits: ArchiveUnit[]; busy: boolean; outputGate: OutputGate; onSave: (schema: ArchiveSchema) => Promise<boolean>; onRemove: (id: string) => Promise<boolean>; onSaveUnit: (unit: ArchiveUnit) => Promise<boolean>; onRemoveUnit: (id: string) => Promise<boolean> }) {
   const [draft, setDraft] = useState(structuredClone(schema));
   const [exchange, setExchange] = useState<ArchiveExchangeFormat>("ead4");
   const [exportError, setExportError] = useState("");
+  const verifyFreshness = useArtifactFreshness();
   const exportErrorId = useId().replace(/:/g, "");
   useDraftLossGuard(JSON.stringify(draft) !== JSON.stringify(schema), () => setDraft(structuredClone(schema)));
   const setField = (index: number, patch: Partial<ArchiveField>) => setDraft({ ...draft, fields: draft.fields.map((item, position) => position === index ? { ...item, ...patch } : item) });
@@ -913,18 +1094,27 @@ function SchemaEditor({ schema, units, allUnits, busy, onSave, onRemove, onSaveU
               <button
                 className="secondary-button"
                 type="button"
-                disabled={busy}
-                aria-describedby={exportError ? exportErrorId : undefined}
-                onClick={() => {
+                disabled={busy || outputGate.blocked}
+                aria-describedby={exportError ? exportErrorId : outputGate.blocked ? `${exportErrorId}-blocked` : undefined}
+                onClick={async () => {
                   setExportError("");
                   try {
-                    downloadText(archiveFilename(schema, exchange), formatArchive(schema, units, exchange), archiveMime(exchange));
+                    if (outputGate.blocked) throw new Error(outputGate.reason);
+                    const lease = await verifyFreshness("authoritative");
+                    const artifactRevision = activeRevision(lease.artifactWorkspace);
+                    const artifactSchema = (artifactRevision.archiveSchemas ?? []).find((item) => item.id === schema.id);
+                    if (!artifactSchema) throw new Error("The selected archival schema is not present in the verified saved generation.");
+                    const artifactUnits = (artifactRevision.archiveUnits ?? []).filter((item) => item.schemaId === artifactSchema.id);
+                    const text = formatArchive(artifactSchema, artifactUnits, exchange);
+                    await lease.recheck();
+                    downloadText(archiveFilename(artifactSchema, exchange), text, archiveMime(exchange));
                   } catch (error) {
                     setExportError(error instanceof Error ? error.message : "The archive could not be exported safely.");
                   }
                 }}
               >Export</button>
             </div>
+            {outputGate.blocked && <p id={`${exportErrorId}-blocked`} className="field-error">{outputGate.reason}</p>}
             {exportError && <p id={exportErrorId} className="field-error" role="alert">{exportError}</p>}
           </div>
         </div>
@@ -1074,6 +1264,7 @@ function RecordsView({
   query,
   format,
   formats,
+  outputGate,
   onQuery,
   onFormat,
   onSelect,
@@ -1088,6 +1279,7 @@ function RecordsView({
   query: string;
   format: string;
   formats: string[];
+  outputGate: OutputGate;
   onQuery: (value: string) => void;
   onFormat: (value: string) => void;
   onSelect: (id: string) => void;
@@ -1122,22 +1314,38 @@ function RecordsView({
           })}
           <ListPager pagination={pagination} onPage={(nextPage) => { if (!confirmDiscard()) return; const next = paginate(records, nextPage); setPage(next.page); if (next.items[0]) onSelect(next.items[0].id); }} />
         </div>
-        {selected ? <RecordInspector key={selected.id} record={selected} findings={selectedFindings} onCreateIncident={onCreateIncident} onUpdate={onUpdate} /> : <aside className="inspector"><Empty label="Select a record." /></aside>}
+        {selected ? <RecordInspector key={selected.id} record={selected} findings={selectedFindings} outputGate={outputGate} onCreateIncident={onCreateIncident} onUpdate={onUpdate} /> : <aside className="inspector"><Empty label="Select a record." /></aside>}
       </div>
     </section>
   );
 }
 
-function RecordInspector({ record, findings, onCreateIncident, onUpdate }: { record: CatalogRecord; findings: ReturnType<typeof checkRecords>; onCreateIncident: (finding: ReturnType<typeof checkRecords>[number]) => Promise<void>; onUpdate: (recordId: string, patch: CatalogRecordPatch) => Promise<void> }) {
+function RecordInspector({ record, findings, outputGate, onCreateIncident, onUpdate }: { record: CatalogRecord; findings: ReturnType<typeof checkRecords>; outputGate: OutputGate; onCreateIncident: (finding: ReturnType<typeof checkRecords>[number]) => Promise<void>; onUpdate: (recordId: string, patch: CatalogRecordPatch) => Promise<void> }) {
   const [exchangeFormat, setExchangeFormat] = useState<ExchangeFormat>("dublin-core");
+  const [outputError, setOutputError] = useState("");
+  const verifyFreshness = useArtifactFreshness();
   const { confirmDiscard } = useContext(DraftGuardContext);
-  const formatted = formatRecords([record], exchangeFormat);
+  const formatted = outputGate.blocked ? "" : formatRecords([record], exchangeFormat);
+  async function deliverRecord() {
+    setOutputError("");
+    try {
+      if (outputGate.blocked) throw new Error(outputGate.reason);
+      const lease = await verifyFreshness("authoritative");
+      const artifactRecord = activeRevision(lease.artifactWorkspace).records.find((item) => item.id === record.id);
+      if (!artifactRecord) throw new Error("The selected catalog record is not present in the verified saved generation.");
+      const text = formatRecords([artifactRecord], exchangeFormat);
+      await lease.recheck();
+      downloadText(exchangeFilename(artifactRecord.id, exchangeFormat), text, exchangeMime(exchangeFormat));
+    } catch (error) {
+      setOutputError(error instanceof Error ? error.message : "The catalog record could not be exported safely.");
+    }
+  }
   return (
     <aside className="inspector" aria-labelledby="record-detail-title">
       <p className="eyebrow">{record.id}</p><h2 id="record-detail-title">Record comparison</h2>
       <RecordComparison record={record} />
-      <div className="record-tools"><label><span>Output format</span><select value={exchangeFormat} onChange={(event) => setExchangeFormat(event.target.value as ExchangeFormat)}>{EXCHANGE_FORMATS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button className="secondary-button" type="button" aria-label={`Download record ${record.id} as ${EXCHANGE_FORMATS.find((item) => item.value === exchangeFormat)?.label ?? exchangeFormat}`} onClick={() => downloadText(exchangeFilename(record.id, exchangeFormat), formatted, exchangeMime(exchangeFormat))}>Download</button></div>
-      <details className="format-preview"><summary>Formatted record</summary><pre tabIndex={0} role="region" aria-label={`${exchangeFormat} formatted record`}>{formatted}</pre></details>
+      <div className="record-tools"><label><span>Output format</span><select value={exchangeFormat} onChange={(event) => { setExchangeFormat(event.target.value as ExchangeFormat); setOutputError(""); }}>{EXCHANGE_FORMATS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button className="secondary-button" type="button" disabled={outputGate.blocked} aria-describedby={outputGate.blocked || outputError ? "record-output-blocked" : undefined} aria-label={`Download record ${record.id} as ${EXCHANGE_FORMATS.find((item) => item.value === exchangeFormat)?.label ?? exchangeFormat}`} onClick={() => { void deliverRecord(); }}>Download</button></div>
+      {(outputGate.blocked || outputError) ? <p id="record-output-blocked" className="field-error" role={outputError ? "alert" : undefined}>{outputError || outputGate.reason}</p> : <details className="format-preview"><summary>Formatted record</summary><pre tabIndex={0} role="region" aria-label={`${exchangeFormat} formatted record`}>{formatted}</pre></details>}
       <RecordCorrection record={record} onUpdate={onUpdate} />
       <section className="inspector-section"><h3>Detected issues</h3>{findings.length ? findings.map((finding) => <div className="finding-item" key={finding.id}><span className={`severity-mark ${finding.severity}`} aria-hidden="true" /><span><strong>{finding.code}</strong><small>{finding.label}</small><button className="finding-action" type="button" onClick={() => { if (confirmDiscard()) void onCreateIncident(finding); }}>Create incident</button></span></div>) : <span className="muted">None</span>}</section>
     </aside>
@@ -1152,10 +1360,31 @@ function RecordCorrection({ record, onUpdate }: { record: CatalogRecord; onUpdat
   return <details className="correction-form"><summary>Create correction revision</summary><form onSubmit={(event) => { event.preventDefault(); onUpdate(record.id, { ...draft, creators: list(draft.creators), contributors: list(draft.contributors), links: list(draft.links) }); }}><label><span>Title</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} maxLength={1024} required /></label><div className="field-pair"><label><span>Creators · one per line</span><textarea value={draft.creators} onChange={(event) => setDraft({ ...draft, creators: event.target.value })} rows={3} /></label><label><span>Contributors · one per line</span><textarea value={draft.contributors} onChange={(event) => setDraft({ ...draft, contributors: event.target.value })} rows={3} /></label></div><div className="field-pair"><label><span>Resource type</span><select value={draft.format} onChange={(event) => setDraft({ ...draft, format: event.target.value as CatalogRecord["format"] })}>{RECORD_FORMATS.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Availability</span><select value={draft.availability} onChange={(event) => setDraft({ ...draft, availability: event.target.value as CatalogRecord["availability"] })}><option>Available</option><option>Online</option><option>Unavailable</option><option>Check availability</option></select></label></div><div className="field-pair"><label><span>Edition</span><input value={draft.edition} onChange={(event) => setDraft({ ...draft, edition: event.target.value })} maxLength={512} /></label><label><span>Location</span><input value={draft.location} onChange={(event) => setDraft({ ...draft, location: event.target.value })} maxLength={512} /></label></div><label><span>Access URLs · one per line</span><textarea value={draft.links} onChange={(event) => setDraft({ ...draft, links: event.target.value })} rows={3} /></label><fieldset><legend>Access state</legend><label><input type="checkbox" checked={draft.requestable} onChange={(event) => setDraft({ ...draft, requestable: event.target.checked })} /> Requestable</label><label><input type="checkbox" checked={draft.publicVisible} onChange={(event) => setDraft({ ...draft, publicVisible: event.target.checked })} /> Publicly visible</label><label><input type="checkbox" checked={draft.suppressed} onChange={(event) => setDraft({ ...draft, suppressed: event.target.checked })} /> Suppressed</label></fieldset><button type="submit">Save revision</button></form></details>;
 }
 
+function IncidentUpdateForm({ incident, busy, onUpdate }: { incident: Incident; busy: boolean; onUpdate: (id: string, patch: Partial<Pick<Incident, "state" | "ownerRole" | "nextAction">> & { note?: string }) => Promise<boolean> }) {
+  const baseline = { state: incident.state, ownerRole: incident.ownerRole, nextAction: incident.nextAction, note: "" };
+  const [draft, setDraft] = useState(baseline);
+  const resolving = incident.state !== "resolved" && draft.state === "resolved";
+  useDraftLossGuard(JSON.stringify(draft) !== JSON.stringify(baseline), () => setDraft(baseline));
+  return (
+    <form className="note-form" onSubmit={async (event) => {
+      event.preventDefault();
+      const patch = { state: draft.state, ownerRole: draft.ownerRole, nextAction: draft.nextAction, ...(draft.note.trim() ? { note: draft.note } : {}) };
+      await onUpdate(incident.id, patch);
+    }}>
+      <div className="inline-fields">
+        <label><span>Status</span><select value={draft.state} disabled={busy} onChange={(event) => setDraft({ ...draft, state: event.target.value as Incident["state"] })}><option value="open">Open</option><option value="investigating">Investigating</option><option value="monitoring">Monitoring</option><option value="resolved">Resolved</option></select></label>
+        <label><span>Owner role <small>Required for resolution.</small></span><input value={draft.ownerRole} maxLength={100} required disabled={busy} onChange={(event) => setDraft({ ...draft, ownerRole: event.target.value })} /></label>
+      </div>
+      <label><span>{draft.state === "resolved" ? "Closure criterion" : "Next action"}</span><textarea value={draft.nextAction} maxLength={500} rows={2} required disabled={busy} onChange={(event) => setDraft({ ...draft, nextAction: event.target.value })} /></label>
+      <label><span>{resolving ? "Resolution evidence" : "Add note"} {resolving && <small>Required in the same update that resolves the incident.</small>}</span><textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} maxLength={2000} rows={3} required={resolving} disabled={busy} /></label>
+      <button type="submit" disabled={busy || JSON.stringify(draft) === JSON.stringify(baseline)}>Save incident update</button>
+    </form>
+  );
+}
+
 function IncidentsView({ incidents, records, selected, busy, onSelect, onUpdate }: { incidents: Incident[]; records: CatalogRecord[]; selected?: Incident; busy: boolean; onSelect: (id: string) => void; onUpdate: (id: string, patch: Partial<Pick<Incident, "state" | "ownerRole" | "nextAction">> & { note?: string }) => Promise<boolean> }) {
-  const [note, setNote] = useState("");
   const [page, setPage] = useState(() => pageContaining(incidents, (incident) => incident.id === selected?.id));
-  const confirmDiscard = useDraftLossGuard(note.length > 0, () => setNote(""));
+  const { confirmDiscard } = useContext(DraftGuardContext);
   const requestedPagination = paginate(incidents, page);
   const effectivePage = selected && !requestedPagination.items.some((incident) => incident.id === selected.id)
     ? pageContaining(incidents, (incident) => incident.id === selected.id)
@@ -1172,12 +1401,10 @@ function IncidentsView({ incidents, records, selected, busy, onSelect, onUpdate 
         {selected ? (
           <aside className="inspector" aria-labelledby="incident-detail-title">
             <p className="eyebrow">{selected.id} · {selected.service}</p><h2 id="incident-detail-title">{selected.title}</h2>
-            <div className="inline-fields"><label><span>Status</span><select value={selected.state} disabled={busy} onChange={(event) => { void onUpdate(selected.id, { state: event.target.value as Incident["state"] }); }}><option value="open">Open</option><option value="investigating">Investigating</option><option value="monitoring">Monitoring</option><option value="resolved">Resolved</option></select></label><div className="read-only-field"><span>Owner role</span><strong>{selected.ownerRole}</strong></div></div>
             {selected.recordId && records.find((record) => record.id === selected.recordId)
               ? <RecordComparison record={records.find((record) => record.id === selected.recordId)!} />
-              : <RecordBlocks input={selected.evidence.map((value, index) => ({ code: `observation_${index + 1}`, name: "Observed condition", value, definition: "A condition recorded when the incident was opened." }))} output={[{ code: "incident_state", name: "Current state", value: selected.state, definition: "The current service-desk state for this incident." }, { code: "next_action", name: "Required output", value: selected.nextAction, definition: "The verifiable result required before this incident can advance." }]} inputMeta="Incident intake" outputMeta="Operational record" />}
-            <section className="inspector-section"><h3>Next action</h3><p>{selected.nextAction}</p></section>
-            <form className="note-form" onSubmit={async (event) => { event.preventDefault(); if (!note.trim()) return; if (await onUpdate(selected.id, { note })) setNote(""); }}><label><span>Add note</span><textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} rows={3} disabled={busy} /></label><button type="submit" disabled={busy}>Add note</button></form>
+              : <RecordBlocks input={selected.evidence.map((value, index) => ({ code: `observation_${index + 1}`, name: "Observed condition", value, definition: "A condition recorded when the incident was opened." }))} output={[{ code: "incident_state", name: "Current state", value: selected.state, definition: "The current service-desk state for this incident." }, { code: "next_action", name: selected.state === "resolved" ? "Closure criterion" : "Required output", value: selected.nextAction, definition: selected.state === "resolved" ? "The criterion recorded for resolving this incident; consult the closure note for the evidence checked." : "The verifiable result required before this incident can advance." }]} inputMeta="Incident intake" outputMeta="Operational record" />}
+            <IncidentUpdateForm key={`${selected.id}:${selected.updatedAt}`} incident={selected} busy={busy} onUpdate={onUpdate} />
             {selected.notes.length > 0 && <details className="trace"><summary>Notes ({selected.notes.length})</summary><ul className="compact-list">{selected.notes.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></details>}
           </aside>
         ) : <aside className="inspector"><Empty label="Select an incident." /></aside>}
@@ -1280,24 +1507,76 @@ function ChangesView({ workspace, config, busy, onSave, onRollback }: { workspac
   );
 }
 
-function ReportsView({ workspace, auditState, busy, localWorkspaces, activeLocal, dirty, storageStatus, storageInspection, onCreate, onSave, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; auditState: "idle" | "valid" | "invalid"; busy: boolean; localWorkspaces: LocalWorkspaceManifest[]; activeLocal: { id: string; token: string; savedAt: string } | null; dirty: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
+function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces, activeLocal, dirty, storageStatus, storageInspection, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; auditState: "idle" | "valid" | "invalid"; outputGate: OutputGate; busy: boolean; localWorkspaces: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
   const [documentKind, setDocumentKind] = useState<DocumentKind>("system-inventory");
   const [exchangeFormat, setExchangeFormat] = useState<ExchangeFormat>("laclab-json");
+  const [incidentId, setIncidentId] = useState(workspace.incidents[0]?.id ?? "");
+  const verifyFreshness = useArtifactFreshness();
   const records = activeRevision(workspace).records;
-  const publicNoticeBlocked = workspace.incidents.some((incident) => incident.synthetic && incident.state !== "resolved");
+  const integrityOutputBlocked = auditState !== "valid";
+  const sampleContaminated = workspace.incidents.some((incident) => incident.synthetic) || records.some((record) => record.source.format === "fixture");
+  const unsupportedClosures = workspace.incidents.some((incident) => incident.state === "resolved" && (!incident.notes.some((note) => note.trim()) || !incident.ownerRole.trim() || /^unassigned$/i.test(incident.ownerRole.trim()) || !incident.nextAction.trim()));
+  const activeManifest = activeLocal ? localWorkspaces.find((item) => item.id === activeLocal.id) : undefined;
+  const activeStale = Boolean(activeLocal && (!activeManifest || activeManifest.token !== activeLocal.token));
+  const publicationStateBlocked = !activeLocal || dirty || activeStale;
+  const publicNoticeBlocked = integrityOutputBlocked || outputGate.blocked || unsupportedClosures || publicationStateBlocked;
+  const publicNoticeBlockMessage = sampleContaminated
+    ? "Public Notice is unavailable because this workspace contains Sample data, including resolved synthetic incidents. Begin a blank workspace for publication work."
+    : unsupportedClosures
+      ? "Public Notice is unavailable because a resolved incident lacks an assigned owner, closure evidence, or a closure criterion or next action. Reopen or document it first."
+      : !activeLocal
+        ? "Public Notice requires a named, saved workspace so freshness can be rechecked at generation time."
+        : dirty
+          ? "Save the current workspace before generating a Public Notice so the exact saved version can be rechecked."
+          : activeStale
+            ? "Public Notice is unavailable because the named saved workspace changed in another tab. Reload it before publication work."
+            : outputGate.reason || "Public Notice is unavailable until the full workspace structure and internal consistency check passes.";
+  const incidentBoundDocument = documentKind === "incident-ticket" || documentKind === "vendor-escalation" || documentKind === "postmortem";
+  const selectedIncidentId = workspace.incidents.some((incident) => incident.id === incidentId) ? incidentId : workspace.incidents[0]?.id ?? "";
+  const operationalOutputBlocked = outputGate.blocked || (incidentBoundDocument && !selectedIncidentId);
+  const catalogOutputBlocked = outputGate.blocked || records.length === 0;
 
-  function deliverReport(kind: "technical" | "notice", download: boolean) {
+  async function deliverReport(kind: "technical" | "notice", download: boolean) {
     try {
-      const generatedAt = new Date().toISOString();
       const technical = kind === "technical";
+      if (!technical && publicNoticeBlocked) throw new Error(publicNoticeBlockMessage);
+      const lease = await verifyFreshness(technical ? "diagnostic" : "authoritative");
+      const generatedAt = new Date().toISOString();
       const filename = technical ? TECHNICAL_REPORT_FILENAME : PUBLIC_NOTICE_FILENAME;
       const html = technical
-        ? makeTechnicalReportHtml(workspace, auditState, generatedAt)
-        : makePublicNoticeHtml(workspace, generatedAt);
+        ? await makeTechnicalReportHtml(workspace, auditState, generatedAt, { savedCopyStatus: lease.savedCopyStatus, continuityStatus: lease.continuityStatus, continuityReason: lease.continuityReason })
+        : await makePublicNoticeHtml(lease.artifactWorkspace, generatedAt);
+      await lease.recheck();
       openHtmlDocument(filename, html, download);
       onNotice((technical ? "Technical report" : "Public notice") + (download ? " HTML downloaded." : " opened as notebook HTML."));
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "The report file could not be prepared safely.");
+    }
+  }
+
+  async function deliverCatalog() {
+    try {
+      if (catalogOutputBlocked) throw new Error(outputGate.reason || "Catalog export requires at least one record.");
+      const lease = await verifyFreshness("authoritative");
+      const text = formatRecords(activeRevision(lease.artifactWorkspace).records, exchangeFormat);
+      await lease.recheck();
+      downloadText(exchangeFilename("in-keeping-catalog", exchangeFormat), text, exchangeMime(exchangeFormat));
+      onNotice("Catalog compatibility file downloaded from the verified named saved generation.");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "The catalog file could not be prepared safely.");
+    }
+  }
+
+  async function deliverOperationalDocument() {
+    try {
+      if (operationalOutputBlocked) throw new Error(outputGate.reason || "Select an incident before generating this incident-bound document.");
+      const lease = await verifyFreshness("authoritative");
+      const text = makeOperationalDocument(lease.artifactWorkspace, documentKind, incidentBoundDocument ? selectedIncidentId : undefined);
+      await lease.recheck();
+      downloadText("in-keeping-" + documentKind + ".md", text, "text/markdown");
+      onNotice("Operational document downloaded for review.");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "The operational document could not be prepared safely.");
     }
   }
 
@@ -1312,35 +1591,43 @@ function ReportsView({ workspace, auditState, busy, localWorkspaces, activeLocal
             <article className="report-document-row">
               <div><span>01 · Staff record</span><h3>Technical report</h3><p>Catalog, archives, service registers, diagrams, safeguards, configuration, revisions, and audit.</p></div>
               <div className="report-document-actions">
-                <button type="button" onClick={() => deliverReport("technical", false)}>Open<span className="sr-only"> technical report in a new tab</span></button>
-                <button type="button" className="secondary-button" onClick={() => deliverReport("technical", true)}>Download<span className="sr-only"> technical report</span> HTML</button>
+                <button type="button" onClick={() => { void deliverReport("technical", false); }}>Open<span className="sr-only"> technical report in a new tab</span></button>
+                <button type="button" className="secondary-button" onClick={() => { void deliverReport("technical", true); }}>Download<span className="sr-only"> technical report</span> HTML</button>
               </div>
             </article>
             <article className="report-document-row">
               <div><span>02 · Public record</span><h3>Public notice</h3><p>Plain-language service status from a fixed public projection.</p></div>
               <div className="report-document-actions">
-                <button type="button" disabled={publicNoticeBlocked} aria-describedby={publicNoticeBlocked ? "public-notice-blocked" : undefined} onClick={() => deliverReport("notice", false)}>Open<span className="sr-only"> public notice in a new tab</span></button>
-                <button type="button" className="secondary-button" disabled={publicNoticeBlocked} aria-describedby={publicNoticeBlocked ? "public-notice-blocked" : undefined} onClick={() => deliverReport("notice", true)}>Download<span className="sr-only"> public notice</span> HTML</button>
+                <button type="button" disabled={publicNoticeBlocked} aria-describedby={publicNoticeBlocked ? "public-notice-blocked" : undefined} onClick={() => { void deliverReport("notice", false); }}>Open<span className="sr-only"> public notice in a new tab</span></button>
+                <button type="button" className="secondary-button" disabled={publicNoticeBlocked} aria-describedby={publicNoticeBlocked ? "public-notice-blocked" : undefined} onClick={() => { void deliverReport("notice", true); }}>Download<span className="sr-only"> public notice</span> HTML</button>
               </div>
             </article>
           </div>
-          {publicNoticeBlocked && <p id="public-notice-blocked" className="field-error">Public Notice is unavailable while open Sample data incidents are present. Resolve them or begin a blank workspace before publication.</p>}
-          <div className="document-picker"><label><span>Catalog format</span><select value={exchangeFormat} onChange={(event) => setExchangeFormat(event.target.value as ExchangeFormat)}>{EXCHANGE_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button type="button" className="secondary-button" aria-label={`Download catalog as ${EXCHANGE_FORMATS.find((option) => option.value === exchangeFormat)?.label ?? exchangeFormat}`} onClick={() => downloadText(exchangeFilename("in-keeping-catalog", exchangeFormat), formatRecords(records, exchangeFormat), exchangeMime(exchangeFormat))}>Download</button></div>
-          <div className="document-picker"><label><span>Operational document</span><select value={documentKind} onChange={(event) => setDocumentKind(event.target.value as DocumentKind)}>{DOCUMENT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button type="button" className="secondary-button" aria-label={`Download ${DOCUMENT_OPTIONS.find((option) => option.value === documentKind)?.label ?? documentKind}`} onClick={() => downloadText("in-keeping-" + documentKind + ".md", makeOperationalDocument(workspace, documentKind), "text/markdown")}>Download</button></div>
+          {publicNoticeBlocked && <p id="public-notice-blocked" className="field-error">{publicNoticeBlockMessage}</p>}
+          {outputGate.blocked && <p id="integrity-output-blocked" className="field-error">{outputGate.reason} The Technical Report remains available and labels the current limitations.</p>}
+          <div className="document-picker"><label><span>Catalog format</span><select value={exchangeFormat} onChange={(event) => setExchangeFormat(event.target.value as ExchangeFormat)}>{EXCHANGE_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button type="button" className="secondary-button" disabled={catalogOutputBlocked} aria-describedby={catalogOutputBlocked ? (outputGate.blocked ? "integrity-output-blocked" : "catalog-output-blocked") : undefined} aria-label={`Download catalog as ${EXCHANGE_FORMATS.find((option) => option.value === exchangeFormat)?.label ?? exchangeFormat}`} onClick={() => { void deliverCatalog(); }}>Download</button></div>
+          {records.length === 0 && <p id="catalog-output-blocked" className="field-error">Catalog export requires at least one record. No empty compatibility file will be generated because IN KEEPING import contracts require 1–1,000 records.</p>}
+          <div className="document-picker"><label><span>Operational document</span><select value={documentKind} onChange={(event) => setDocumentKind(event.target.value as DocumentKind)}>{DOCUMENT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button type="button" className="secondary-button" disabled={operationalOutputBlocked} aria-describedby={operationalOutputBlocked ? "operational-output-blocked" : undefined} aria-label={`Download ${DOCUMENT_OPTIONS.find((option) => option.value === documentKind)?.label ?? documentKind}`} onClick={() => { void deliverOperationalDocument(); }}>Download</button></div>
+          {incidentBoundDocument && <label className="workspace-select"><span>Incident for this document</span><select value={selectedIncidentId} onChange={(event) => setIncidentId(event.target.value)}>{workspace.incidents.map((incident) => <option key={incident.id} value={incident.id}>{incident.id} · {incident.title} · {incident.state}</option>)}</select></label>}
+          {operationalOutputBlocked && <p id="operational-output-blocked" className="field-error">{outputGate.reason || "Select an incident before generating this incident-bound document."}</p>}
           <details className="format-rules"><summary>Formatting rules</summary><dl>{DATA_FORMAT_RULES.map((item) => <div key={item.type}><dt>{item.type}</dt><dd>{item.rule}</dd></div>)}</dl></details>
         </section>
-        <LocalWorkspaceManager key={activeLocal?.id ?? "working-copy"} workspace={workspace} manifests={localWorkspaces} activeLocal={activeLocal} dirty={dirty} busy={busy} storageStatus={storageStatus} storageInspection={storageInspection} auditState={auditState} onCreate={onCreate} onSave={onSave} onOpen={onOpen} onRename={onRename} onDuplicate={onDuplicate} onDelete={onDelete} onForget={onForget} onOpenBackup={onOpenBackup} onRequestDurable={onRequestDurable} onNotice={onNotice} onReset={onReset} onVerify={onVerify} onRefreshStorage={onRefreshStorage} />
+        <LocalWorkspaceManager key={activeLocal?.id ?? "working-copy"} workspace={workspace} manifests={localWorkspaces} activeLocal={activeLocal} dirty={dirty} busy={busy} storageStatus={storageStatus} storageInspection={storageInspection} auditState={auditState} onCreate={onCreate} onSave={onSave} onAcceptContinuity={onAcceptContinuity} onDownloadContinuityReceipt={onDownloadContinuityReceipt} onCompareContinuityReceipt={onCompareContinuityReceipt} onOpen={onOpen} onRename={onRename} onDuplicate={onDuplicate} onDelete={onDelete} onForget={onForget} onOpenBackup={onOpenBackup} onRequestDurable={onRequestDurable} onNotice={onNotice} onReset={onReset} onVerify={onVerify} onRefreshStorage={onRefreshStorage} />
       </div>
     </section>
   );
 }
 
-function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy, storageStatus, storageInspection, auditState, onCreate, onSave, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; manifests: LocalWorkspaceManifest[]; activeLocal: { id: string; token: string; savedAt: string } | null; dirty: boolean; busy: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; auditState: "idle" | "valid" | "invalid"; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
+function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy, storageStatus, storageInspection, auditState, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; manifests: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; busy: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; auditState: "idle" | "valid" | "invalid"; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState(activeLocal?.id ?? manifests[0]?.id ?? "");
   const [nextName, setNextName] = useState("");
   const [backupReview, setBackupReview] = useState<WorkspaceBackupReview | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [continuityRole, setContinuityRole] = useState("");
+  const [continuityReference, setContinuityReference] = useState("");
+  const [continuityRationale, setContinuityRationale] = useState("");
+  const [continuityAcknowledged, setContinuityAcknowledged] = useState(false);
   const nameDraftId = useDraftRegistration(Boolean(name), () => setName(""));
   const nextNameDraftId = useDraftRegistration(Boolean(nextName), () => setNextName(""));
   const { confirmDiscard } = useContext(DraftGuardContext);
@@ -1353,6 +1640,7 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
   const selectedActiveIsStale = Boolean(selected && activeLocal?.id === selected.id && activeStale);
   const storageQuarantined = Boolean(storageInspection?.quarantine.length);
   const currentSessionState = activeStale ? "Saved copy changed" : activeManifest ? (dirty ? "Unsaved changes" : "Saved") : "Working copy";
+  const continuityAccepted = activeLocal && ["continuity-verified-local", "continuity-corroborated"].includes(activeLocal.continuity.status);
 
   async function downloadBackup(target: "session" | "selected") {
     if (backupBusy) return;
@@ -1394,11 +1682,11 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
     }
   }
 
-  async function openReviewedBackup() {
+  async function openReviewedBackup(disposition: EvidenceDispositionInput) {
     if (!backupReview || backupReview.blocked || backupBusy) return;
     setBackupBusy(true);
     try {
-      if (await onOpenBackup(backupReview)) setBackupReview(null);
+      if (await onOpenBackup(backupReview, disposition)) setBackupReview(null);
     } finally {
       setBackupBusy(false);
     }
@@ -1419,14 +1707,42 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
           <details className="workspace-secondary-actions"><summary>Rename or duplicate</summary><label><span>New name</span><input value={nextName} onChange={(event) => setNextName(event.target.value)} maxLength={120} /></label><div className="button-row"><button type="button" className="secondary-button" aria-label={selected ? `Rename saved workspace “${selected.name}”` : "Rename saved workspace"} disabled={busy || storageQuarantined || !selected || !nextName.trim() || selectedActiveIsStale} onClick={async () => { if (!selected) return; const submittedName = nextName; if (!confirmDiscard("Rename this workspace and discard the other unsaved name?", false, nextNameDraftId)) return; if (await onRename(selected.id, submittedName)) setNextName(""); }}>Rename</button><button type="button" className="secondary-button" aria-label={selected ? `Duplicate saved workspace “${selected.name}”` : "Duplicate saved workspace"} disabled={busy || storageQuarantined || !selected || !nextName.trim()} onClick={async () => { if (!selected) return; const submittedName = nextName; if (!confirmDiscard("Duplicate this workspace and discard the other unsaved name?", false, nextNameDraftId)) return; if (await onDuplicate(selected.id, submittedName)) setNextName(""); }}>Duplicate</button></div></details>
         </>
       ) : <p className="empty-state">No local workspaces yet.</p>}
+      {activeLocal && <div className="workspace-backup">
+        <h3>Continuity checkpoint</h3>
+        <p className="field-help">{activeLocal.continuity.reason} Ordinary output requires an exact current independent receipt comparison; save, rename, and reload clear that process-local proof. A local checkpoint detects later coherent workspace replacement only while the checkpoint remains separate. It does not prove authenticity, truth, identity, custody, completeness, authority, or trusted time.</p>
+        {continuityAccepted
+          ? <div className="button-row"><span className="audit-result valid">{activeLocal.continuity.status === "continuity-corroborated" ? "Independent receipt matches" : "Continuity verified locally"}</span><button type="button" className="secondary-button" disabled={busy || dirty || activeStale} onClick={() => { void onDownloadContinuityReceipt(); }}>Download independent receipt</button><label className="backup-file"><span>Compare independent receipt</span><input type="file" accept=".json,application/json" disabled={busy || dirty || activeStale} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void onCompareContinuityReceipt(file); }} /></label></div>
+          : activeLocal.continuity.status === "continuity-failure"
+            ? <p className="field-error" role="alert">Continuity failure: this lineage cannot be re-anchored in place. Preserve it for diagnosis and create a separately accepted new baseline.</p>
+            : <form className="workspace-create" onSubmit={async (event) => {
+                event.preventDefault();
+                const accepted = await onAcceptContinuity({
+                  operatorRole: continuityRole,
+                  authorityReference: continuityReference,
+                  rationale: continuityRationale,
+                  sourceKind: "local-workspace",
+                  sourcePayloadDigest: null,
+                  sourceAnchorDigest: null,
+                  acknowledgment: CONTINUITY_ACKNOWLEDGMENT,
+                });
+                if (accepted) { setContinuityRole(""); setContinuityReference(""); setContinuityRationale(""); setContinuityAcknowledged(false); }
+              }}>
+                <p className="field-help">Explicitly accept this exact clean saved generation as a local baseline. Role and authority reference are operator claims, not authenticated identity.</p>
+                <label><span>Operator role claim</span><input value={continuityRole} onChange={(event) => setContinuityRole(event.target.value)} maxLength={120} required /></label>
+                <label><span>Authority or ticket reference</span><input value={continuityReference} onChange={(event) => setContinuityReference(event.target.value)} maxLength={500} required /></label>
+                <label><span>Acceptance rationale</span><textarea value={continuityRationale} onChange={(event) => setContinuityRationale(event.target.value)} maxLength={1000} rows={3} required /></label>
+                <label className="checkbox-row"><input type="checkbox" checked={continuityAcknowledged} onChange={(event) => setContinuityAcknowledged(event.target.checked)} required /><span>I understand continuity is not authenticity and browser time is untrusted.</span></label>
+                <button type="submit" disabled={busy || dirty || activeStale || !continuityAcknowledged}>Accept local continuity baseline</button>
+              </form>}
+      </div>}
       <div className="workspace-backup">
         <h3>Workspace backup</h3>
-        <p className="field-help">Plaintext JSON. The current session {dirty ? "includes unsaved changes" : activeLocal ? "matches its saved browser copy" : "is a working copy"}; the selected backup reads the named saved copy.</p>
+        <p className="field-help">Plaintext JSON. The current session {activeStale ? "is stale relative to a changed or removed named saved copy" : dirty ? "includes unsaved changes" : activeLocal ? "matches the named saved version known in this tab" : "is a working copy"}; the selected backup reopens and validates the named saved copy.</p>
         <ReviewAnnouncements label="Backup review" busy={backupBusy} summary={backupReview?.summary ?? ""} blocked={backupReview?.blocked ?? false} />
         <div className="button-row"><button type="button" className="secondary-button" aria-label={`Download current session “${workspace.name}”`} disabled={busy || backupBusy} onClick={() => downloadBackup("session")}>Download current session</button><button type="button" className="secondary-button" aria-label={selected ? `Download saved workspace “${selected.name}”` : "Download selected saved workspace"} disabled={busy || backupBusy || !selected} onClick={() => downloadBackup("selected")}>Download selected saved backup</button><label className="backup-file"><span>Review backup</span><input type="file" accept=".json,application/json" disabled={busy || backupBusy} onChange={selectBackup} /></label></div>
-        {backupReview && <div className={backupReview.blocked ? "backup-review blocked" : "backup-review ready"}><strong>{backupReview.filename}</strong><span>{backupReview.summary}</span><button type="button" className="secondary-button" disabled={backupReview.blocked || busy || backupBusy} onClick={openReviewedBackup}>Open reviewed backup</button></div>}
+        {backupReview && <div className={backupReview.blocked ? "backup-review blocked" : "backup-review ready"}><strong>{backupReview.filename}</strong><span>{backupReview.summary}</span>{!backupReview.blocked && <EvidenceDispositionForm busy={busy || backupBusy} onSubmit={openReviewedBackup} />}</div>}
       </div>
-      <details className="storage-details"><summary>Storage and integrity</summary><dl><div><dt>Persistence</dt><dd>{storageStatus.persisted === true ? "Durable storage granted" : storageStatus.persisted === false ? "Browser may evict under storage pressure" : "Not reported"}</dd></div><div><dt>Browser usage</dt><dd>{storageStatus.usage === null || storageStatus.quota === null ? "Not reported" : `${formatBytes(storageStatus.usage)} of ${formatBytes(storageStatus.quota)}`}</dd></div></dl><div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={onVerify}>Verify integrity</button><span className={`audit-result ${auditState}`}>{auditState === "idle" ? "Checking" : auditState === "valid" ? "Internally consistent" : "Mismatch detected"}</span></div>{storageStatus.persisted === false && <button type="button" className="secondary-button" onClick={onRequestDurable}>Request durable storage</button>}<div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={onReset}>Start blank working copy</button><button type="button" className="text-button" disabled={busy || storageQuarantined || manifests.length === 0} onClick={onForget}>Delete all local workspaces</button></div></details>
+      <details className="storage-details"><summary>Storage and integrity</summary><dl><div><dt>Persistence</dt><dd>{storageStatus.persisted === true ? "Durable storage granted" : storageStatus.persisted === false ? "Browser may evict under storage pressure" : "Not reported"}</dd></div><div><dt>Browser usage</dt><dd>{storageStatus.usage === null || storageStatus.quota === null ? "Not reported" : `${formatBytes(storageStatus.usage)} of ${formatBytes(storageStatus.quota)}`}</dd></div></dl><div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={onVerify}>Verify integrity</button><span className={`audit-result ${auditState}`}>{auditState === "idle" ? "Full check in progress" : auditState === "valid" ? "Internally consistent; not authenticated" : "Mismatch detected"}</span></div>{storageStatus.persisted === false && <button type="button" className="secondary-button" onClick={onRequestDurable}>Request durable storage</button>}<div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={onReset}>Start blank working copy</button><button type="button" className="text-button" disabled={busy || storageQuarantined || manifests.length === 0} onClick={onForget}>Delete all local workspaces</button></div></details>
     </section>
   );
 }
@@ -1451,7 +1767,7 @@ function StorageQuarantine({ inspection, busy, onNotice, onRefresh }: { inspecti
     try {
       const next = await inspectLocalWorkspaceRecoveryCandidate(choice.workspaceId, choice.generation);
       setCandidate(next);
-      setCandidateStatus(next ? "Verified recovery candidate." : "This generation did not verify and cannot be reconstructed.");
+      setCandidateStatus(next ? "Internally consistent recovery candidate; authenticity and completeness are not established." : "This generation did not verify and cannot be reconstructed.");
     } catch (error) {
       setCandidateStatus(error instanceof Error ? error.message : "The selected generation could not be inspected safely.");
     } finally {
@@ -1514,7 +1830,32 @@ function ReviewAnnouncements({ label, busy, summary, blocked }: { label: string;
   );
 }
 
-function ImportReviewCard({ review, onApply, busy }: { review: ImportReview; onApply: () => Promise<void>; busy: boolean }) {
+function EvidenceDispositionForm({ busy, onSubmit }: { busy: boolean; onSubmit: (disposition: EvidenceDispositionInput) => Promise<unknown> }) {
+  const [decision, setDecision] = useState<"" | EvidenceDispositionInput["decision"]>("");
+  const [claimedOrigin, setClaimedOrigin] = useState<"" | EvidenceDispositionInput["claimedOrigin"]>("");
+  const [custodyNote, setCustodyNote] = useState("");
+  const [actorRoleClaim, setActorRoleClaim] = useState("");
+  const [rationale, setRationale] = useState("");
+  const [policyReference, setPolicyReference] = useState("");
+  return (
+    <form className="evidence-disposition" onSubmit={async (event) => {
+      event.preventDefault();
+      if (!decision || !claimedOrigin) return;
+      await onSubmit({ decision, claimedOrigin, custodyNote, actorRoleClaim, rationale, policyReference, atBrowser: new Date().toISOString(), timeBasis: EVIDENCE_TIME_BASIS });
+    }}>
+      <p className="field-help">Structural checks passed. They do not establish truth, custody, completeness, or authority. An admission remains explicitly unverified.</p>
+      <label><span>Disposition</span><select value={decision} onChange={(event) => setDecision(event.target.value as typeof decision)} required><option value="">Choose…</option><option value="admit-unverified">Admit as unverified evidence</option><option value="reject">Reject evidence</option><option value="withdraw">Record withdrawal</option></select></label>
+      <label><span>Claimed origin / custody path</span><select value={claimedOrigin} onChange={(event) => setClaimedOrigin(event.target.value as typeof claimedOrigin)} required><option value="">Choose…</option><option value="unknown">Unknown</option><option value="direct-export">Direct export claim</option><option value="transferred-copy">Transferred copy claim</option><option value="other">Other claim</option></select></label>
+      <label><span>Custody note</span><textarea value={custodyNote} onChange={(event) => setCustodyNote(event.target.value)} maxLength={2000} rows={2} required /></label>
+      <label><span>Actor role claim</span><input value={actorRoleClaim} onChange={(event) => setActorRoleClaim(event.target.value)} maxLength={200} required /></label>
+      <label><span>Decision rationale</span><textarea value={rationale} onChange={(event) => setRationale(event.target.value)} maxLength={2000} rows={2} required /></label>
+      <label><span>Policy / ticket reference</span><input value={policyReference} onChange={(event) => setPolicyReference(event.target.value)} maxLength={500} required /></label>
+      <button type="submit" disabled={busy || !decision || !claimedOrigin}>Record disposition</button>
+    </form>
+  );
+}
+
+function ImportReviewCard({ review, onApply, busy }: { review: ImportReview; onApply: (disposition: EvidenceDispositionInput) => Promise<void>; busy: boolean }) {
   const [page, setPage] = useState(0);
   const findingPagination = paginate(review.findings, page);
   return (
@@ -1522,7 +1863,7 @@ function ImportReviewCard({ review, onApply, busy }: { review: ImportReview; onA
       <dl><div><dt>File</dt><dd>{review.filename}</dd></div><div><dt>Format</dt><dd>{review.format}</dd></div><div><dt>Records</dt><dd>{review.records.length}</dd></div><div><dt>SHA-256</dt><dd><code>{review.digest || "—"}</code></dd></div></dl>
       <div className={review.blocked ? "review-state blocked" : "review-state ready"}>{review.summary}</div>
       {review.findings.length > 0 && <details><summary>Findings ({review.findings.length})</summary><ul className="compact-list">{findingPagination.items.map((finding) => <li key={finding.id}><strong>{finding.code}</strong> · {finding.label}<span>{finding.detail}</span></li>)}</ul><ListPager pagination={findingPagination} onPage={setPage} /></details>}
-      <button type="button" onClick={onApply} disabled={busy || review.blocked || review.records.length === 0}>Apply reviewed records</button>
+      {!review.blocked && review.records.length > 0 && <EvidenceDispositionForm busy={busy} onSubmit={onApply} />}
     </div>
   );
 }

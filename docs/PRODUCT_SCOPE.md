@@ -35,16 +35,16 @@ The application is designed for legitimate work. It is not a game, role-play env
 
 ## Supported tasks
 
-1. Review a bounded exchange file without mutating trusted workspace state.
-2. See the original input and normalized output as two complete, defined record blocks.
-3. Apply accepted catalog or archival records as one revision after destination revalidation.
+1. Review a bounded exchange file without mutating the active working state.
+2. See each catalog record's original input evidence and normalized output as two complete, defined record blocks.
+3. Record an explicit `admit-unverified`, `reject`, or `withdraw` disposition bound to the reviewed source, canonical payload, parser profile, and entity scope; apply only `admit-unverified` catalog or archival records as one revision after destination revalidation.
 4. Correct normalized catalog access/display state without altering retained source evidence.
 5. Define and version a custom archival schema using explicit data types, cardinalities, definitions, vocabularies, and mapping cues.
 6. Create typed archival and cross-department operating records.
 7. Record incidents, evidence, notes, ownership, state, and required next action.
 8. Change configuration or restore retained state by creating a new revision.
 9. Save, reopen, duplicate, rename, recover, or delete named browser-local workspaces.
-10. Export lossless packages, receiving-system crosswalks, operational Markdown, a complete staff Technical Report, a fixed-projection Public Notice, or a full workspace backup.
+10. Produce diagnostic Technical Reports, plaintext workspace backups, and continuity receipts with explicit limits; produce ordinary lossless packages, receiving-system crosswalks, operational Markdown, service exports, and Public Notices only through the named-save, continuity, evidence, integrity, and click-time freshness gates.
 
 ## Non-goals
 
@@ -55,15 +55,16 @@ IN KEEPING does not:
 - execute imports against Alma, FOLIO, Sierra, WorldShare, ArchivesSpace, AtoM, Preservica, DSpace, Islandora, or another service;
 - crawl, resolve, proxy, authenticate, or validate the future behavior of a URL;
 - validate every output against an external schema or installed vendor version during ordinary use;
+- authenticate an evidence-disposition claim, convert structural validity or a local operator decision into a verified/trusted/authoritative status, or implement the institution's external corroboration process;
 - provide legal, licensing, records-retention, privacy, preservation, or accessibility approval;
-- prove authorship, custody, identity, trusted time, intent, or nonrepudiation; or
+- prove truth, authorship, custody, identity, completeness, authority, trusted time, intent, or nonrepudiation; or
 - infer unknown metadata in place of reviewable source evidence.
 
 ## Product principles
 
 ### Evidence before confidence
 
-The interface shows input and output records, not a short model-generated assurance. Every normalization remains inspectable. Claims in documentation distinguish implementation, automated verification, manual verification, and external/vendor acceptance.
+The interface shows input and output records, not a short model-generated assurance. Every normalization remains inspectable. A content-bound disposition records an unauthenticated operator claim and never turns `admit-unverified` into a local authority state. Claims in documentation distinguish implementation, automated verification, manual verification, and external/vendor acceptance.
 
 ### Refuse hidden loss
 
@@ -71,11 +72,13 @@ Input over cardinality, malformed tagged lines, namespace-confused XML, unsuppor
 
 ### Operator action is the state boundary
 
-Opening the application creates only a blank working copy. Imports require review and apply. Persistence requires a named-workspace create/save. Downloads require an explicit control. Public Notice generation uses an explicit fixed projection.
+Opening the application creates only a blank working copy. Imports and reviewed backups require a complete explicit disposition with no default; only `admit-unverified` permits Apply or Open. Persistence requires a named-workspace create/save. Ordinary outward downloads require a named clean save and a click-time lease that reopens the exact saved generation and rechecks it immediately before activation. Technical Reports, plaintext backups, and continuity receipts remain deliberately available for bounded diagnosis, recovery, and comparison. Public Notice generation uses an explicit fixed projection.
+
+Withdrawal records that an earlier claim should no longer support use; it does not remove or validate the content that claim described. Retained affected content remains diagnostic-only until a governed revision removes or supersedes it. The current product has no local verified/trusted evidence state, so external corroboration cannot be represented as a self-issued authority upgrade.
 
 ### Reversibility over silent mutation
 
-Catalog corrections, configuration, archival data, service registers, rollback, and recovery produce revisions. IndexedDB saves rotate verified generations. Deletion is explicit and does not pretend to recall exported files.
+Catalog corrections, configuration, archival data, service registers, rollback, and recovery produce revisions. IndexedDB saves rotate internally validated, manifest-digest-bound generations only after validating the exact stored base that rotation would replace. Deletion is explicit and does not pretend to recall exported files.
 
 ### Minimal interface, complete documentation
 
@@ -86,9 +89,9 @@ The work surface avoids permanent privacy/security slogans and status clutter. T
 A release is successful when:
 
 - a librarian can complete each supported task without sample content, source-code knowledge, or hidden state;
-- invalid or hostile data cannot enter a revision through a documented import path;
+- structurally invalid or parser-hostile data cannot enter a revision through a documented import path, while structurally valid content remains explicitly unverified and subject to external semantic reconciliation;
 - a receiving-system handoff preserves the lossless source package and records every transformation boundary;
-- a saved workspace can be verified, a manifest-bound prior generation can open as an unsaved recovery copy, and a verified quarantined generation can be reconstructed under a new workspace ID without altering the source bytes;
+- a saved workspace can be checked for internal consistency, a manifest-digest-bound prior generation can open as an unsaved recovery copy, and an internally validated quarantined generation can be reconstructed under a new workspace ID without altering the source bytes;
 - the Public Notice cannot contain private record/evidence fields;
 - the production origin contains no application server or data binding;
 - automated release gates are green and residual manual/external evidence is not overstated; and
@@ -100,11 +103,13 @@ A release is successful when:
 | --- | --- |
 | Working copy | Current in-memory workspace, whether or not associated with a named saved workspace |
 | Named workspace | Manifest plus current/prior immutable generations stored in IndexedDB on one origin |
-| Trusted state | State that has passed exact validation and entered a revision or verified generation |
-| Quarantine | Parsed review state that cannot mutate a workspace until explicit apply and revalidation |
+| Internally validated state | State that has passed exact structural and consistency validation and entered a revision or manifest-digest-bound generation; this does not establish authenticity or completeness |
+| Quarantine | Parsed review state that cannot mutate a workspace until an explicit `admit-unverified` disposition, apply of the same unchanged successful in-memory review, and destination revalidation |
 | Source evidence | Bounded reconstructed elements and full source-file digest; not a byte-for-byte embedded file |
+| Evidence disposition | Content-bound local `admit-unverified`, `reject`, or `withdraw` decision over exact source/review/scope fields and unauthenticated operator claims; never a verified, trusted, or authoritative status |
 | Revision | Immutable snapshot of catalog, configuration, archival, and service-register state |
 | Audit event | Linked event record with action/outcome and, for current events, complete non-audit state digest |
-| Workspace backup | Plaintext JSON recovery envelope containing the complete validated workspace |
+| Workspace backup | Plaintext JSON recovery envelope containing the complete bounded workspace serialization but excluding the separately stored continuity checkpoint; review/Open requires an outer unverified disposition and does not prove nested evidence authenticity or completeness |
+| Continuity receipt | Comparison metadata for a separately stored local checkpoint; not a workspace backup, trusted timestamp, signature, or authenticity proof |
 | Post-run notebook HTML | Deterministic static HTML report styled after a Jupyter output document; not executable `.ipynb` content |
 | Public projection | New allowlisted public object constructed from incident categories, not a redacted private object |

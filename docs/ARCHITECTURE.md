@@ -43,7 +43,7 @@ The only network request required by the application is acquisition of its stati
 | Cloudflare Static Assets | Serve versioned HTML, CSS, JS, fonts, social card, response headers, robots, sitemap, and 404 | HTTP request metadata; no application request body/API | Platform logs/analytics according to account settings; no app workspace store |
 | React application | Navigation, editors, comparisons, import review, incidents, reports, operator status | Operator input and selected local files | In-memory working copy |
 | Web Crypto | SHA-256 digests and random workspace IDs | Canonical serialized state or source bytes | None |
-| IndexedDB v2 | Named manifests and immutable verified generations | Explicit save/create operations | Origin-scoped browser profile storage |
+| IndexedDB v3 | Named manifests, immutable manifest-bound generations, and separate local continuity anchors | Explicit save/create/baseline operations | Origin-scoped browser profile storage |
 | Browser file activation | Local open/download through Blob object URLs | Explicitly generated export/report/backup | Destination selected or handled by browser/OS |
 
 ## Components
@@ -52,13 +52,17 @@ The only network request required by the application is acquisition of its stati
 | --- | --- |
 | `app/continuity-lab.tsx` | Task navigation, lists, accessible record blocks, editors, import review, reports, and named-workspace controls |
 | `app/lab-core.ts` | Workspace model, catalog parsers, findings, incidents, revisions, rollback, state digests, audit hashing, and Markdown records |
+| `app/json-safety.ts` | Raw JSON duplicate-member and Unicode-scalar quarantine before semantic parsing |
 | `app/xml-safety.ts` | Allocation-bounded pre-DOM structural scan; declaration/DTD/PI and depth/element limits |
 | `app/archival-schemas.ts` | Ten record types, sixteen field kinds, schema/hierarchy validation, EAD and management-software crosswalks |
 | `app/service-register.ts` | Eight service areas, sixteen register definitions, validation, JSON, and long-form CSV |
 | `app/record-formats.ts` | Ten catalog serializers and explicit formatting rules |
 | `app/public-url.ts` | Shared public-HTTPS policy without network resolution |
-| `app/lab-storage.ts` | IndexedDB manifests/generations, tokens, migration, quota, recovery, deletion, and cross-tab change signals |
-| `app/workspace-backups.ts` | Exact v2 backup envelope, v1 compatibility review, payload digest, and full-state recovery |
+| `app/continuity-anchor.ts` | Exact local continuity checkpoints, consecutive-history extension, and unsigned exact-state receipts |
+| `app/evidence-authority.ts` | Exact source/review/scope bindings and explicit non-authoritative evidence dispositions |
+| `app/output-freshness.ts` | Click-time named-save lease, exact reopened-snapshot rendering boundary, and pre-activation recheck |
+| `app/lab-storage.ts` | IndexedDB manifests/generations/anchors, tokens, migration, quota, recovery, deletion, and cross-tab change signals |
+| `app/workspace-backups.ts` | Exact v2 backup envelope, v1 compatibility review, payload digest, and bounded workspace-payload recovery |
 | `app/report-documents.ts` | Deterministic Technical Report and fixed-projection Public Notice HTML |
 | `security-headers.ts` / `public/_headers` | Shared checkpoint policy and production static response policy |
 | `worker/sites-adapter.ts` | Checkpoint-only static asset pass-through with the same security headers |
@@ -79,16 +83,18 @@ exact typed reconstruction
     ↓
 complete validation and findings
     ↓
-quarantine: Original input / New output
+quarantine: catalog Original/New or archival review
     ↓
-operator Apply
+explicit admit-unverified / reject / withdraw disposition
     ↓
-provenance + destination revalidation
+unchanged-review + provenance + destination revalidation
     ↓
-one new revision and linked event
+unverified evidence register + linked event
+    ↓
+one new revision only for admit-unverified
 ```
 
-Review does not mutate workspace state. Apply does not trust the earlier review object: it rechecks source binding, exact record shape, findings, destination IDs/identifiers, hierarchy, and complete-set invariants. Failure returns an operation notice and leaves the prior revision unchanged.
+Review does not mutate workspace state. A successful catalog or archival review is bound in memory to that exact review instance and every decision field. Consumption requires a complete disposition with claimed origin, custody note, role claim, rationale, policy reference, and explicitly untrusted browser time. Apply accepts only that unchanged object; a clone, mutation, or coherently substituted review is rejected and the file must be reviewed again. Apply also rechecks record shape, findings, destination IDs/identifiers, hierarchy, and complete-set invariants. Every valid explicit decision receives one linked application outcome. Reject, withdraw, destination conflict, and capacity failure preserve `not-applied`; success preserves `applied` plus the exact resulting revision ID/state digest. Source kind, reason, outcome, and disposition must agree. There is deliberately no local verified, trusted, or authoritative status. Every claim may be fabricated together, so structural success and operator disposition do not establish truth, custody, or completeness.
 
 ## Save and recovery sequence
 
@@ -101,14 +107,20 @@ complete snapshot + audit validation
     ↓
 SHA-256 payload digest
     ↓
-optimistic token comparison
+verify manifest-bound save base
     ↓
-single manifest/generation transaction
+verify and extend local anchor when present
     ↓
-current generation + one prior generation
+single manifest/generation/anchor transaction
+    ↓
+recheck optimistic token, recovery generation, and anchor
 ```
 
-On open, the active generation must match both its stored payload digest and the digest bound by its manifest, then pass complete snapshot and audit validation. A disagreement between the active bytes and manifest stops the operation; the application does not conceal that disagreement by opening a fallback. If the active generation is missing or fails structural validation without a digest disagreement, the prior generation may open only when the manifest also binds that generation's digest and the complete payload verifies. It opens as an unsaved recovery copy. Opening never rewrites or deletes either stored generation.
+Before a normal save opens its write transaction, the application re-reads and internally validates the manifest-bound active generation and the prior generation that rotation would delete. If a local continuity anchor exists, the saved base must match its checkpoint and the new audit ledger must contain the complete old ledger as an exact prefix; the next checkpoint is prepared for the immediately following generation. A reset ledger that merely names the old terminal hash cannot advance the same anchor. Ledger rollover uses a new workspace ID/lineage and separately accepted baseline. A recovery save additionally requires the active generation to remain invalid without a digest disagreement and requires the submitted workspace to match the internally validated fallback byte for byte. Anchored lineages cannot be repaired in place from an older generation. The transaction rechecks the optimistic token, selected recovery generation, and current anchor before writing the generation, manifest, and advanced anchor atomically. A rejected check leaves the stored generations and anchor in place.
+
+On open, the active generation must match both its stored payload digest and the digest bound by its manifest, then pass complete snapshot and audit validation. The manifest timestamp must match the stored generation timestamp; manifest and generation byte counts must match the validated serialization; and the manifest name and domain counts must match the validated payload. A present anchor is separately validated and must match the generation, exact payload digest, audit genesis/terminal hashes, terminal state digest, event count, workspace ID, and lineage ID. Disagreement is reported as continuity failure and blocks ordinary outward artifacts; local equality alone yields only `continuity-verified-local`, which also remains blocked. Ordinary output requires an exact independently supplied receipt to yield `continuity-corroborated`. A disagreement between the active bytes and manifest stops the operation; the application does not conceal that disagreement by opening a fallback. If the active generation is missing or fails structural validation without a digest disagreement, the prior generation may open only when the manifest also binds that generation's digest and the complete payload passes the same internal validation. It opens as an unsaved recovery copy. Opening never rewrites or deletes either stored generation.
+
+An operator may explicitly accept an unanchored current generation as a baseline only after supplying bounded acceptance fields and acknowledging that continuity is not authenticity. This freezes the accepted bytes; it does not show they were true or complete. The local anchor is separate from the workspace payload but remains in the same origin, device, and attacker domain. Replacing the workspace while that anchor remains unchanged fails. Replacing every browser-local store can still produce a coherent local result. An unsigned receipt downloaded after the exact saved checkpoint detects that co-replacement only when the receipt remains unchanged and independently held; independence, identity, custody, and trusted time are outside the application. Manifest, generations, and anchor are read in one IndexedDB snapshot when a receipt is made. A save advances the anchor and makes the prior receipt stale; save, rename, or reload also clears process-local corroboration, so every current ordinary-output generation needs a fresh receipt and comparison.
 
 Invalid manifests, orphan generations, and unreferenced generations enter a separate bounded inspection path. The operator selects a generation, the application recomputes its payload digest and validates the complete workspace, and reconstruction creates a new UUID workspace after explicit confirmation. The quarantined source bytes remain unchanged for diagnosis or a later institutionally governed deletion.
 
@@ -116,7 +128,7 @@ IndexedDB is scoped to the exact scheme/host/port. Moving from the temporary Sit
 
 ## State model
 
-A workspace contains an active revision, retained revisions, incidents, and an audit ledger. A revision contains catalog records, configuration, archival schemas/records, and service-register records. Incident notes are operational append-only entries within the workspace; changes to state/owner/next action update the incident and add a state-bound audit event.
+A workspace contains an active revision, retained revisions, incidents, an evidence-disposition register, linked evidence-application outcomes, and an audit ledger. A revision contains catalog records, configuration, archival schemas/records, and service-register records. Evidence decisions bind exact source metadata, parser profile, canonical reviewed payload, entity scope, and an explicit operator disposition; application outcomes bind whether/why it applied and the resulting revision ID/state digest where applicable. They never express verified authority. Incident notes are operational append-only entries within the workspace; changes to state/owner/next action update the incident and add a state-bound audit event.
 
 Revision content is retained for at most 20 versions. When the cap rotates, the oldest revision body is removed; later audit events retain hashes and actions but cannot reconstruct that body. The limit is a product storage boundary, not a records-retention schedule.
 
@@ -136,13 +148,35 @@ current event hash
 next event previous hash
 ```
 
-Verification detects mismatched event hashes, broken links, sequence errors, revision digests, and a latest event that does not bind current state. It cannot authenticate the actor, prevent an actor with write access from recomputing a new consistent chain, anchor trusted time, or always reveal valid tail truncation. The Technical Report diagrams and threat model preserve this boundary.
+Verification detects mismatched event hashes, broken links, sequence errors, revision digests, and a latest event that does not bind current state. A matching local continuity anchor additionally detects a regenerated saved payload while that separate checkpoint remains unchanged. Neither mechanism authenticates the actor, establishes source truth, anchors trusted time, or prevents an actor who controls every browser-local store from replacing the workspace and checkpoint together. The Technical Report diagrams and threat model preserve this boundary.
+
+## Outward-artifact freshness sequence
+
+```text
+operator requests artifact
+    ↓
+require named, clean, non-recovery session
+    ↓
+reopen and validate exact saved generation
+    ↓
+compare token + state digest + audit head + revision + exact receipt/evidence state
+    ↓
+render from reopened saved snapshot
+    ↓
+reopen and compare the complete fingerprint again
+    ↓
+synchronous browser file activation
+```
+
+Catalog batch and per-record exports, archive exports, service exports, operational documents, and Public Notices use this authoritative lease. Storage failure, recovery fallback, identity disagreement, token drift, state mismatch, anything short of exact current receipt corroboration, or active unverified/unattributed evidence stops before activation. The same receipt text is checked against the atomically reopened current anchor on both reads; React state alone is insufficient. The Technical Report is intentionally diagnostic: it renders the open session while the UI supplies a live `current`, `stale`, `unsaved-changes`, or `not-saved` classification. Current-session and conflict-recovery backups are also explicit preservation paths rather than authoritative derivatives.
+
+The two IndexedDB reads and file activation are not one atomic transaction. Another tab can commit immediately after the final read, and a downloaded artifact does not prove later currency, institutional approval, authenticity, or successful persistence/opening by the browser or operating system.
 
 ## Reports
 
-The Technical Report is a 14-cell static staff record. It includes document control; straight-line software/data diagrams; inventory; interoperability boundary; all findings; complete catalog/archive/service Original input and New output blocks; incidents; schemas; formatting tables; configuration; revisions; audit; safeguards; and production limits. An 8 MiB workspace-input boundary and 32 MiB generated-output boundary prevent unbounded single-document rendering.
+The Technical Report is a 15-cell static staff-facing view of the active workspace state. It includes document control; straight-line software/data diagrams; inventory; interoperability boundary; current findings; complete catalog **Original input** and **New output** blocks; archive/service **Entered active values** and **Canonical active record** blocks; incidents; schemas; formatting tables; configuration; evidence dispositions; revision and audit indexes; safeguards; and production limits. Archive and service records have no separate per-record original-source version in the data model. Retained historical revision bodies are available in a workspace backup rather than fully rendered in this report. An 8 MiB workspace-input boundary and 32 MiB generated-output boundary prevent unbounded single-document rendering.
 
-The Public Notice is a four-cell static public record constructed only from nonsynthetic open-incident service categories. It cannot see raw evidence, notes, identifiers, workspace name, records, configuration, hashes, or staff role values. Open Sample data incidents block generation.
+The Public Notice is a four-cell static public record constructed only from nonsynthetic open-incident service categories. It cannot see raw evidence, notes, identifiers, workspace name, records, configuration, hashes, or staff role values. Any synthetic incident in the workspace blocks generation, including a resolved one.
 
 Both HTML files embed Jost and CSS, carry `default-src 'none'` plus `script-src 'none'` and `connect-src 'none'`, make no runtime request, and use ordered-list diagrams with a single path and no crossing lines.
 
@@ -158,6 +192,9 @@ HSTS is one year without `includeSubDomains` or preload. Those broader commitmen
 - Unsupported but common BibTeX constructs are rejected with an operator-facing reason rather than partially parsed.
 - Malformed RIS/MARC mnemonic lines reject the file; they are not skipped.
 - Rejected mutation preserves the active revision and saved generation.
+- Missing, malformed, local-only, stale-receipt, or mismatched continuity state blocks ordinary outward artifacts and cannot be repaired by silent in-place re-anchoring.
+- Active admitted-unverified evidence, unattributed archive/service content, and evidence-record/application tampering block ordinary outward artifacts; historical non-reaching decisions remain reportable without permanently latching unrelated content. Diagnostic reports and plaintext backups remain available for review.
+- Authoritative output fails before activation when either saved-state read fails or the saved/session fingerprint changes during construction.
 - Quota or persistence denial leaves the working copy open and directs the operator to an explicit plaintext backup.
 - Token mismatch blocks overwrite and requires reopen or deliberate duplication; edits are never auto-merged.
 - A report over its capacity boundary fails before file activation; component exports and backup remain available.

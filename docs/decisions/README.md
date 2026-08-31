@@ -9,6 +9,7 @@ These records preserve decisions that constrain production operation, storage, p
 | [0003](0003-manifest-bound-two-generation-storage.md) | Accepted | Saves retain manifest-bound active/prior generations and recovery is non-destructive |
 | [0004](0004-fail-closed-import-quarantine.md) | Accepted | Untrusted exchange files remain in bounded quarantine until explicit apply |
 | [0005](0005-no-application-telemetry.md) | Accepted | Production has no application telemetry or workspace-content network path |
+| [0006](0006-continuity-anchors-and-evidence-boundaries.md) | Accepted | Explicit continuity anchors, unverified evidence dispositions, and click-time output leases preserve bounded trust claims |
 
 ## Format
 

@@ -31,6 +31,7 @@ Accessibility is a release requirement because import review, save/recovery, inc
 - Import and backup results use `role="alert"` when blocked and `role="status"` when ready.
 - A polite, atomic live region announces global operation messages.
 - Storage quarantine has an alert heading, live candidate status, explicit selection, and named reconstruction action.
+- Ordinary-output controls expose explanatory text when a named clean save, an exact independently supplied current receipt, or `continuity-corroborated` status is missing; when a draft/operation or storage quarantine remains; or when active operator-admitted-unverified evidence or unattributed catalog/archive/service content remains. Click-time storage, recovery, continuity, evidence-authority, mutation, and race failures are announced through the global operation status instead of silently activating a file.
 - Field errors are associated with the relevant form and use alert semantics.
 - Pagers expose a polite `start–end of total` status.
 - Status is expressed in text as well as color. Decorative severity marks are hidden from assistive technology.
@@ -103,6 +104,8 @@ The report renderer is covered by structural tests. It has not been certified in
 - Imported content can contain language changes that are not individually marked with `lang`.
 - Accessibility of files after opening in third-party cataloging, spreadsheet, office, or archival software is outside this renderer.
 - A disabled Public Notice control has explanatory association, but institution-specific communications guidance is external.
+- Authoritative output performs asynchronous IndexedDB validation twice. Browser popup and automatic-download policy may outlive the transient activation associated with the original keyboard or pointer event, so actual new-tab/download behavior and the clarity of a blocked activation require browser-specific testing.
+- A successful programmatic anchor click does not expose whether the browser or operating system durably saved or opened the file. Success messaging must not be interpreted as later currency, publication approval, or recipient receipt.
 
 These limitations do not waive accessibility obligations. They identify evidence that must be collected before a conformance statement.
 
@@ -121,7 +124,10 @@ Record results by browser, operating system, viewport, input method, and assisti
 7. Make a configuration draft, attempt navigation, and verify discard protection.
 8. Create, save, open, rename, duplicate, back up, and delete a named workspace.
 9. Exercise quarantine inspection with a controlled corrupt fixture; verify candidate status and reconstruction naming.
-10. Open/download both report types and navigate headings, tables, diagrams, and Original/New blocks.
+10. From a clean named workspace with an exact independently retained current receipt compared successfully, no pending draft/operation or storage quarantine, and no active operator-admitted-unverified evidence or unattributed catalog/archive/service content, open/download both report types and navigate headings, tables, diagrams, and Original/New blocks. Confirm the Public Notice uses the authoritative saved path while the Technical Report remains visibly diagnostic.
+11. Delay or suppress cross-tab notification, change the named generation in another tab before an output click and during a large report build, and confirm the file is not activated and the freshness failure is announced.
+12. Exercise unnamed, dirty, drafted, in-flight, recovery, quarantined, local-only/missing/mismatched/stale-receipt continuity, active admitted evidence, and unattributed catalog/archive/service states. Confirm ordinary output explains the block while the bounded Technical Report and current-session recovery backup remain distinguishable diagnostic paths.
+13. Test Open and Download after the asynchronous double-open check in every supported browser. Record popup/download blocking, focus placement, announcement, retry route, actual file presence, and behavior when the Blob URL is revoked after its bounded lifetime.
 
 Acceptance requires a logical focus order, visible focus, no keyboard trap, complete accessible names, understandable errors/status, and no silent draft loss.
 
@@ -147,6 +153,7 @@ At minimum, the institution should select one Chromium and one non-Chromium brow
 | [`tests/interface-contracts.test.mjs`](../tests/interface-contracts.test.mjs) | Viewport scroll-owner CSS, native/labeled controls and action names, draft guards, live regions, pagination/selection, bounded parent selector, quarantine surface | Browser accessibility tree, focus execution, screen-reader speech, contrast, touch |
 | [`tests/list-pagination.test.mjs`](../tests/list-pagination.test.mjs) | 100-row boundary, hostile/stale page clamping, selected-record page resolution | Render performance and comprehension |
 | [`tests/report-documents.test.mjs`](../tests/report-documents.test.mjs) | Report language/structure, skip link, semantic diagrams/tables, no active/remote content, Original/New content | Screen-reader/browser behavior and converted formats |
+| [`tests/output-freshness.test.mjs`](../tests/output-freshness.test.mjs) | Named/clean saved-state checks, recovery/token/state substitution, continuity/evidence gates, storage and session errors, and post-construction race rejection | Popup/download completion, announcement comprehension, focus behavior, or later artifact currency |
 | [`tests/rendered-html.test.mjs`](../tests/rendered-html.test.mjs) | Production HTML and security response policy | Visual/reflow/accessibility behavior |
 
 Current execution evidence is recorded in [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md). A test file's existence is not evidence that it passed a particular release candidate.

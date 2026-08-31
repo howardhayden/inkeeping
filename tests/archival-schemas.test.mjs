@@ -305,6 +305,17 @@ test("custom archive schemas require canonical accessible labels and vocabulary 
   assert.throws(() => validateArchiveSet([duplicateTerms], []), /vocabulary terms must be unique/i);
 });
 
+test("archival reference codes are unique across distinct records", () => {
+  const schema = makeSchema("blank", "SCHEMA-REFERENCE-CODE-UNIQUE");
+  const first = makeUnit(schema, { id: "UNIT-REFERENCE-FIRST", referenceCode: "MS-SAME" });
+  const second = makeUnit(schema, { id: "UNIT-REFERENCE-SECOND", referenceCode: "MS-SAME" });
+
+  assert.throws(
+    () => validateArchiveSet([schema], [first, second]),
+    /reference codes must be unique across distinct records/i,
+  );
+});
+
 test("lossless schema packages round-trip all 16 field kinds for all 10 archival record types", async () => {
   for (const [recordIndex, recordType] of ARCHIVE_RECORD_TYPES.entries()) {
     const schema = makeSchema("blank", `SCHEMA-PACKAGE-${recordIndex}`);
@@ -413,6 +424,17 @@ test("schema-package quarantine rejects MIME mismatches, unknown fields, and pro
   const mismatch = await reviewArchiveImport(new File([packet], "secure.archive-schema.json", { type: "text/html" }));
   assert.equal(mismatch.blocked, true);
   assert.match(mismatch.summary, /MIME|media type|content type|file type/i);
+
+  assert.equal(packet[0], "{", "schema packages must serialize as a top-level JSON object");
+  const duplicateIdentity = `{"schema":"forged",${packet.slice(1)}`;
+  const duplicateReview = await reviewArchiveImport(new File([duplicateIdentity], "duplicate.archive-schema.json", { type: "application/json" }));
+  assert.equal(duplicateReview.blocked, true);
+  assert.match(duplicateReview.summary, /duplicate member name "schema"/i);
+
+  const surrogateIdentity = packet.replace("in-keeping/archive-schema", "\\uD800");
+  const surrogateReview = await reviewArchiveImport(new File([surrogateIdentity], "surrogate.archive-schema.json", { type: "application/json" }));
+  assert.equal(surrogateReview.blocked, true);
+  assert.match(surrogateReview.summary, /unpaired Unicode surrogate/i);
 
   const withUnknownRoot = JSON.parse(packet);
   withUnknownRoot.renderAsHtml = true;
@@ -897,6 +919,114 @@ test("EAD 4 import keeps root and child evidence separate and reads digital form
   assert.deepEqual(list(child.values.digital_object_uri), ["https://archives.example.org/child"]);
   assert.equal(root.published, false);
   assert.equal(root.language, "en");
+});
+
+test("EAD repository identity rejects duplicate, missing, and conflicting scalar structures", async () => {
+  const cases = [
+    {
+      name: "duplicate-repository.ead4.xml",
+      xml: `<ead xmlns="https://standards.openpreservation.org/ead/v4"><archDesc level="collection"><identificationData><unitId>MS-EAD4-REPO</unitId><unitTitle>EAD4 repository</unitTitle><otherIdentificationData localType="in-keeping:repository">Repository A</otherIdentificationData><otherIdentificationData localType="in-keeping:repository">Repository B</otherIdentificationData></identificationData></archDesc></ead>`,
+    },
+    {
+      name: "duplicate-repository.ead3.xml",
+      xml: `<ead xmlns="http://ead3.archivists.org/schema/"><archdesc level="collection"><did><unitid>MS-EAD3-REPO</unitid><unittitle>EAD3 repository</unittitle><repository><corpname><part>Repository A</part></corpname></repository><repository><corpname><part>Repository A</part></corpname></repository></did></archdesc></ead>`,
+    },
+    {
+      name: "duplicate-repository.ead.xml",
+      xml: `<ead xmlns="urn:isbn:1-931666-22-9"><archdesc level="collection"><did><unitid>MS-EAD2002-REPO</unitid><unittitle>EAD 2002 repository</unittitle><repository><corpname>Repository A</corpname></repository><repository><corpname>Repository B</corpname></repository></did></archdesc></ead>`,
+    },
+    {
+      name: "conflicting-repository-carriers.ead3.xml",
+      xml: `<ead xmlns="http://ead3.archivists.org/schema/"><archdesc level="collection"><did><unitid>MS-EAD3-CARRIERS</unitid><unittitle>EAD3 repository carriers</unittitle><repository><corpname><part>Repository A</part></corpname><name><part>Repository B</part></name></repository></did></archdesc></ead>`,
+    },
+    {
+      name: "missing-repository-carrier.ead.xml",
+      xml: `<ead xmlns="urn:isbn:1-931666-22-9"><archdesc level="collection"><did><unitid>MS-EAD2002-EMPTY</unitid><unittitle>EAD 2002 empty repository</unittitle><repository/></did></archdesc></ead>`,
+    },
+  ];
+
+  for (const fixture of cases) {
+    const review = await reviewArchiveImport(new File([fixture.xml], fixture.name, { type: "application/xml" }));
+    assert.equal(review.blocked, true, `${fixture.name}: ${review.summary}`);
+    assert.match(review.summary, /repository/i, fixture.name);
+    assert.equal(review.units.length, 0, fixture.name);
+  }
+});
+
+test("EAD document and maintenance-agency identities are singular, nonempty, and retained", async () => {
+  const fixtures = [
+    {
+      name: "document-id.ead4.xml",
+      id: "EAD4-DOCUMENT",
+      identity: "<recordId>EAD4-DOCUMENT</recordId>",
+      xml: `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-DOCUMENT</recordId><maintenanceAgency><agencyName>Example Archives</agencyName></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-EAD4-DOC</unitId><unitTitle>EAD4 document identity</unitTitle></identificationData></archDesc></ead>`,
+    },
+    {
+      name: "document-id.ead3.xml",
+      id: "EAD3-DOCUMENT",
+      identity: "<recordid>EAD3-DOCUMENT</recordid>",
+      xml: `<ead xmlns="http://ead3.archivists.org/schema/"><control><recordid>EAD3-DOCUMENT</recordid><maintenanceagency><agencyname>Example Archives</agencyname></maintenanceagency></control><archdesc level="collection"><did><unitid>MS-EAD3-DOC</unitid><unittitle>EAD3 document identity</unittitle></did></archdesc></ead>`,
+    },
+    {
+      name: "document-id.ead.xml",
+      id: "EAD2002-DOCUMENT",
+      identity: "<eadid>EAD2002-DOCUMENT</eadid>",
+      xml: `<ead xmlns="urn:isbn:1-931666-22-9"><eadheader><eadid>EAD2002-DOCUMENT</eadid></eadheader><archdesc level="collection"><did><unitid>MS-EAD2002-DOC</unitid><unittitle>EAD 2002 document identity</unittitle></did></archdesc></ead>`,
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const accepted = await reviewArchiveImport(new File([fixture.xml], fixture.name, { type: "application/xml" }));
+    assert.equal(accepted.blocked, false, `${fixture.name}: ${accepted.summary}`);
+    assert.equal(accepted.schema.id, fixture.id, `${fixture.name} retains its document identity as the imported schema ID`);
+
+    for (const hostile of [
+      fixture.xml.replace(fixture.identity, `${fixture.identity}${fixture.identity.replace(fixture.id, `${fixture.id}-OTHER`)}`),
+      fixture.xml.replace(fixture.identity, fixture.identity.replace(fixture.id, "   ")),
+      fixture.xml.replace(fixture.identity, ""),
+      fixture.xml.replace(fixture.identity, fixture.identity.replace(fixture.id, "https://example.org/unsafe")),
+      ...["\u200b", "\u2060", "\u200e"].map((control) => fixture.xml.replace(fixture.identity, fixture.identity.replace(fixture.id, control))),
+    ]) {
+      const review = await reviewArchiveImport(new File([hostile], `hostile-${fixture.name}`, { type: "application/xml" }));
+      assert.equal(review.blocked, true, `${fixture.name}: ${review.summary}`);
+      assert.match(review.summary, /document identity|recordId|recordid|eadid|safe local identifier/i, fixture.name);
+      assert.equal(review.units.length, 0, fixture.name);
+    }
+  }
+
+  const maintenanceCases = [
+    `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-AGENCY-DUP</recordId><maintenanceAgency><agencyName>One</agencyName></maintenanceAgency><maintenanceAgency><agencyName>Two</agencyName></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-1</unitId><unitTitle>Agency</unitTitle></identificationData></archDesc></ead>`,
+    `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-AGENCY-NAME</recordId><maintenanceAgency><agencyName>One</agencyName><agencyName>Two</agencyName></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-1</unitId><unitTitle>Agency</unitTitle></identificationData></archDesc></ead>`,
+    `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-AGENCY-EMPTY</recordId><maintenanceAgency/></control><archDesc level="collection"><identificationData><unitId>MS-1</unitId><unitTitle>Agency</unitTitle></identificationData></archDesc></ead>`,
+    `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-AGENCY-FORMAT</recordId><maintenanceAgency><agencyName>\u200b</agencyName></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-1</unitId><unitTitle>Agency</unitTitle></identificationData></archDesc></ead>`,
+    `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-AGENCY-CODE</recordId><maintenanceAgency><agencyCode>US\u2060EX</agencyCode></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-1</unitId><unitTitle>Agency</unitTitle></identificationData></archDesc></ead>`,
+    `<ead xmlns="http://ead3.archivists.org/schema/"><control><recordid>EAD3-AGENCY-DUP</recordid><maintenanceagency><agencyname>One</agencyname></maintenanceagency><maintenanceagency><agencyname>Two</agencyname></maintenanceagency></control><archdesc level="collection"><did><unitid>MS-1</unitid><unittitle>Agency</unittitle></did></archdesc></ead>`,
+    `<ead xmlns="http://ead3.archivists.org/schema/"><control><recordid>EAD3-AGENCY-EMPTY</recordid><maintenanceagency><agencyname> </agencyname></maintenanceagency></control><archdesc level="collection"><did><unitid>MS-1</unitid><unittitle>Agency</unittitle></did></archdesc></ead>`,
+    `<ead xmlns="http://ead3.archivists.org/schema/"><control><recordid>EAD3-AGENCY-FORMAT</recordid><maintenanceagency><agencyname>Archive\u200eName</agencyname></maintenanceagency></control><archdesc level="collection"><did><unitid>MS-1</unitid><unittitle>Agency</unittitle></did></archdesc></ead>`,
+  ];
+  for (const [index, xml] of maintenanceCases.entries()) {
+    const review = await reviewArchiveImport(new File([xml], `maintenance-${index}.xml`, { type: "application/xml" }));
+    assert.equal(review.blocked, true, review.summary);
+    assert.match(review.summary, /maintenance.*agency/i);
+    assert.equal(review.units.length, 0);
+  }
+
+  const unicodeAgency = `<ead xmlns="https://standards.openpreservation.org/ead/v4"><control><recordId>EAD4-UNICODE-AGENCY</recordId><maintenanceAgency><agencyName>مكتبة الجامعة</agencyName></maintenanceAgency></control><archDesc level="collection"><identificationData><unitId>MS-UNICODE</unitId><unitTitle>Unicode agency</unitTitle></identificationData></archDesc></ead>`;
+  const unicodeReview = await reviewArchiveImport(new File([unicodeAgency], "unicode-agency.ead4.xml", { type: "application/xml" }));
+  assert.equal(unicodeReview.blocked, false, unicodeReview.summary);
+  assert.equal(unicodeReview.schema.id, "EAD4-UNICODE-AGENCY");
+});
+
+test("EAD3 canonical repository identity keeps repeated name parts and unrelated repeatable fields", async () => {
+  const xml = `<ead xmlns="http://ead3.archivists.org/schema/"><archdesc level="collection"><did><unitid>MS-EAD3-PARTS</unitid><unittitle>EAD3 repeated fields</unittitle><unitdate>1900/1910</unitdate><unitdate>1920/1930</unitdate><origination><corpname><part>Creator A</part></corpname></origination><origination><corpname><part>Creator B</part></corpname></origination><repository><corpname><part>University of Example</part><part>Library</part><part>Special Collections</part></corpname></repository></did><relatedmaterial><p>Guide A</p></relatedmaterial><relatedmaterial><p>Guide B</p></relatedmaterial></archdesc></ead>`;
+  const review = await reviewArchiveImport(new File([xml], "repository-parts.ead3.xml", { type: "application/xml" }));
+
+  assert.equal(review.blocked, false, review.summary);
+  assert.equal(review.units.length, 1);
+  assert.equal(review.units[0].values.repository, "University of Example Library Special Collections");
+  assert.deepEqual(list(review.units[0].values.dates), ["1900/1910", "1920/1930"]);
+  assert.equal(list(review.units[0].values.creator).length, 2);
+  assert.deepEqual(list(review.units[0].values.related_material), ["Guide A", "Guide B"]);
 });
 
 test("EAD imports that contain no archival description fail closed", async () => {

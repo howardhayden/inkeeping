@@ -1,10 +1,13 @@
 # Validation report
 
+> **Historical candidate-specific evidence — not current working-tree proof.** This record is fixed to report `VR-2026-08-21-04`, its 2026-08-21 evidence time, and the modified working tree based on commit `48c02336559c34366d739d1727e833cbd6115264`. Its 139-test result must not be relabeled or updated to describe later source. Any later candidate requires a new execution record tied to its exact immutable commit and artifacts.
+
 ## Record identification
 
 | Field | Value |
 | --- | --- |
 | Report ID | `VR-2026-08-21-04` |
+| Record status | Historical candidate-specific evidence; superseded for any later implementation claim |
 | Evidence time | 2026-08-21T23:06:17Z |
 | Repository base commit | `48c02336559c34366d739d1727e833cbd6115264` |
 | Candidate state | Modified working tree; not an immutable release commit |
@@ -198,4 +201,4 @@ The following remain required before a production acceptance decision:
 
 ## Conclusion
 
-The current modified working tree passed the complete release gate: fresh builds, all 139 tests, the dependency audit, static Cloudflare artifact validation, and the strict Wrangler dry run. The recorded controls support the hostile-import, loss-prevention, pagination, and plaintext-disclosure behaviors for this candidate. Production acceptance remains pending only on the immutable release/CI record and the live-host, accessibility, interoperability, recovery, and institutional-governance evidence identified above.
+The report-identified modified working tree passed the complete release gate: fresh builds, all 139 tests, the dependency audit, static Cloudflare artifact validation, and the strict Wrangler dry run. The recorded controls support the hostile-import, loss-prevention, pagination, and plaintext-disclosure behaviors only for that historical candidate. They do not validate later review-binding, identity, storage-freshness, incident-closure, or outward-output changes. Production acceptance for any candidate requires a new immutable release/CI record plus the live-host, accessibility, interoperability, recovery, and institutional-governance evidence identified above.

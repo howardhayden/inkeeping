@@ -1,4 +1,15 @@
 import { MAX_AUDIT_EVENTS, activeRevision, forkWorkspace, renameWorkspace, validateWorkspaceSnapshot, type Workspace } from "./lab-core.ts";
+import {
+  CONTINUITY_ACKNOWLEDGMENT,
+  createContinuityAnchor,
+  extendContinuityAnchor,
+  formatContinuityReceipt,
+  validateContinuityAnchor,
+  verifyContinuityAnchor,
+  type ContinuityAcceptance,
+  type ContinuityAnchor,
+  type ContinuityVerification,
+} from "./continuity-anchor.ts";
 
 // The durable database name is intentionally retained across the product rename so
 // existing browser-local work is not stranded.
@@ -6,7 +17,8 @@ const DATABASE = "library-access-continuity-lab";
 const LEGACY_STORE = "workspaces";
 const MANIFEST_STORE = "workspace-manifests";
 const GENERATION_STORE = "workspace-generations";
-const DB_VERSION = 2;
+const CONTINUITY_STORE = "workspace-continuity-anchors";
+const DB_VERSION = 3;
 const CHANGE_CHANNEL = "in-keeping-local-workspaces";
 
 export const MAX_LOCAL_WORKSPACES = 50;
@@ -45,12 +57,24 @@ type StoredGeneration = {
   payload: Workspace;
 };
 
+type StoredWorkspaceBundle = {
+  manifest: LocalWorkspaceManifest | undefined;
+  active: StoredGeneration | undefined;
+  previous: StoredGeneration | undefined;
+  anchor: ContinuityAnchor | undefined;
+};
+
 export type LocalWorkspaceOpen = {
   workspace: Workspace;
   manifest: LocalWorkspaceManifest;
   token: string;
   recoveredFromPrevious: boolean;
   openedGeneration: number;
+  continuity: ContinuityVerification;
+};
+
+export type LocalContinuityAcceptanceInput = Omit<ContinuityAcceptance, "browserTime" | "acknowledgment"> & {
+  acknowledgment: typeof CONTINUITY_ACKNOWLEDGMENT;
 };
 
 export type LocalStorageStatus = {
@@ -163,9 +187,22 @@ export async function inspectLocalWorkspaceStorage(): Promise<LocalWorkspaceStor
       }
     }
 
-    for (const manifest of validManifests.values()) {
+    for (const manifest of [...validManifests.values()]) {
       const item = quarantineEntry(manifest.id);
-      if (!generationKeys.has(generationKey(manifest.id, manifest.activeGeneration))) addReason(item, "missing-active-generation");
+      if (!generationKeys.has(generationKey(manifest.id, manifest.activeGeneration))) {
+        addReason(item, "missing-active-generation");
+        if (manifest.previousGeneration !== null && generationKeys.has(generationKey(manifest.id, manifest.previousGeneration))) addGeneration(item, manifest.previousGeneration);
+        validManifests.delete(manifest.id);
+      } else {
+        const stored = await readOne<StoredGeneration>(db, GENERATION_STORE, [manifest.id, manifest.activeGeneration]);
+        const verified = await verifyGeneration(stored, manifest.payloadDigest);
+        if (verified.status !== "verified" || !activeManifestMetadataMatches(manifest, stored, verified.workspace)) {
+          addReason(item, "invalid-manifest");
+          addGeneration(item, manifest.activeGeneration);
+          if (manifest.previousGeneration !== null && generationKeys.has(generationKey(manifest.id, manifest.previousGeneration))) addGeneration(item, manifest.previousGeneration);
+          validManifests.delete(manifest.id);
+        }
+      }
       if (manifest.previousGeneration !== null && !generationKeys.has(generationKey(manifest.id, manifest.previousGeneration))) addReason(item, "missing-previous-generation");
       if (!item.reasons.length) quarantine.delete(manifest.id);
     }
@@ -191,7 +228,13 @@ export async function inspectLocalWorkspaceRecoveryCandidate(workspaceId: string
     const candidate = await verifiedRecoveryCandidate(stored, workspaceId, generation);
     if (validManifestShape(manifest) && (manifest.activeGeneration === generation || manifest.previousGeneration === generation)) {
       const expectedDigest = manifest.activeGeneration === generation ? manifest.payloadDigest : manifest.previousPayloadDigest;
-      if (candidate && expectedDigest === candidate.payloadDigest) throw new Error("The selected generation is referenced by a matching valid manifest and is not quarantined.");
+      if (candidate && expectedDigest === candidate.payloadDigest) {
+        const active = await readOne<StoredGeneration>(db, GENERATION_STORE, [workspaceId, manifest.activeGeneration]);
+        const activeVerification = await verifyGeneration(active, manifest.payloadDigest);
+        if (activeVerification.status === "verified" && activeManifestMetadataMatches(manifest, active, activeVerification.workspace)) {
+          throw new Error("The selected generation is referenced by a matching valid manifest and is not quarantined.");
+        }
+      }
     }
     return candidate;
   } finally { db.close(); }
@@ -217,6 +260,87 @@ export async function createLocalWorkspace(workspace: Workspace): Promise<LocalW
   return writeWorkspace(createWorkspaceId(), workspace, null, true);
 }
 
+/**
+ * Explicitly accepts the current saved generation as a local continuity
+ * baseline. This records an operator claim and browser time; it does not prove
+ * identity, authority, custody, completeness, or authenticity.
+ */
+export async function initializeLocalContinuityAnchor(
+  id: string,
+  expectedToken: string,
+  input: LocalContinuityAcceptanceInput,
+): Promise<ContinuityVerification> {
+  validateWorkspaceId(id);
+  await ensureLegacyMigration();
+  const db = await openDatabase();
+  try {
+    const manifest = await readOne<LocalWorkspaceManifest>(db, MANIFEST_STORE, id);
+    if (!manifest || !validManifestShape(manifest) || manifest.token !== expectedToken) throw new Error("The named saved workspace changed. Reopen it before accepting a continuity baseline.");
+    const existing = await readOne<ContinuityAnchor>(db, CONTINUITY_STORE, id);
+    if (existing) throw new Error("This workspace already has a continuity anchor. A failed lineage cannot be silently re-anchored in place.");
+    const stored = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, manifest.activeGeneration]);
+    const verified = await verifyGeneration(stored, manifest.payloadDigest);
+    if (verified.status !== "verified") throw new Error("The manifest-bound saved generation does not verify and cannot be accepted as a continuity baseline.");
+    const anchor = await createContinuityAnchor({
+      workspace: verified.workspace,
+      workspaceId: id,
+      lineageId: `lineage-${crypto.randomUUID()}`,
+      generation: manifest.activeGeneration,
+      payloadDigest: manifest.payloadDigest,
+      initialAcceptance: {
+        ...input,
+        browserTime: new Date().toISOString(),
+        acknowledgment: CONTINUITY_ACKNOWLEDGMENT,
+      },
+    });
+    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE], "readwrite", (transaction, resolve, reject) => {
+      const manifestRequest = transaction.objectStore(MANIFEST_STORE).get(id);
+      const generationRequest = transaction.objectStore(GENERATION_STORE).get([id, manifest.activeGeneration]);
+      const anchorRequest = transaction.objectStore(CONTINUITY_STORE).get(id);
+      let readyCount = 0;
+      const ready = () => {
+        readyCount += 1;
+        if (readyCount !== 3) return;
+        const current = manifestRequest.result as LocalWorkspaceManifest | undefined;
+        const currentGeneration = generationRequest.result as StoredGeneration | undefined;
+        if (!current || current.token !== expectedToken || current.payloadDigest !== manifest.payloadDigest || current.activeGeneration !== manifest.activeGeneration) return reject(new Error("The named saved workspace changed while its continuity baseline was being accepted."));
+        if (!currentGeneration || currentGeneration.payloadDigest !== manifest.payloadDigest || currentGeneration.workspaceId !== id || currentGeneration.generation !== manifest.activeGeneration) return reject(new Error("The saved generation changed while its continuity baseline was being accepted."));
+        if (anchorRequest.result !== undefined) return reject(new Error("A continuity anchor was created in another tab. Reopen the workspace before continuing."));
+        transaction.objectStore(CONTINUITY_STORE).add(anchor);
+        resolve(undefined);
+      };
+      manifestRequest.onsuccess = ready;
+      generationRequest.onsuccess = ready;
+      anchorRequest.onsuccess = ready;
+      manifestRequest.onerror = () => reject(storageError(manifestRequest.error));
+      generationRequest.onerror = () => reject(storageError(generationRequest.error));
+      anchorRequest.onerror = () => reject(storageError(anchorRequest.error));
+    });
+    announceChange();
+    return verifyContinuityAnchor(anchor, {
+      workspace: verified.workspace,
+      workspaceId: id,
+      lineageId: anchor.lineageId,
+      generation: manifest.activeGeneration,
+      payloadDigest: manifest.payloadDigest,
+    });
+  } finally { db.close(); }
+}
+
+export async function makeLocalContinuityReceipt(id: string, expectedToken: string): Promise<string> {
+  const { opened, anchor } = await openLocalWorkspaceWithAnchor(id, null);
+  if (opened.token !== expectedToken) throw new Error("The named saved workspace changed. Reopen it before downloading a continuity receipt.");
+  if (opened.recoveredFromPrevious || opened.continuity.status !== "continuity-verified-local" || !anchor) throw new Error("The exact active saved generation does not have a matching local continuity checkpoint.");
+  return formatContinuityReceipt(await validateContinuityAnchor(anchor));
+}
+
+export async function corroborateLocalContinuityReceipt(id: string, expectedToken: string, serializedReceipt: string): Promise<ContinuityVerification> {
+  const { opened } = await openLocalWorkspaceWithAnchor(id, serializedReceipt);
+  if (opened.token !== expectedToken || opened.recoveredFromPrevious) throw new Error("The named saved workspace changed or required recovery. Reopen it before comparing an independent continuity receipt.");
+  if (opened.continuity.status !== "continuity-corroborated") throw new Error(`The independent continuity receipt did not corroborate this exact saved generation. ${opened.continuity.reason}`);
+  return opened.continuity;
+}
+
 export async function saveLocalWorkspace(id: string, workspace: Workspace, expectedToken: string): Promise<LocalWorkspaceManifest> {
   validateWorkspaceId(id);
   return writeWorkspace(id, workspace, expectedToken, false, null);
@@ -228,25 +352,46 @@ export async function saveRecoveredLocalWorkspace(id: string, workspace: Workspa
   return writeWorkspace(id, workspace, expectedToken, false, recoveredGeneration);
 }
 
-export async function openLocalWorkspace(id: string): Promise<LocalWorkspaceOpen> {
+export async function openLocalWorkspace(id: string, independentReceipt: string | null = null): Promise<LocalWorkspaceOpen> {
+  return (await openLocalWorkspaceWithAnchor(id, independentReceipt)).opened;
+}
+
+async function openLocalWorkspaceWithAnchor(id: string, independentReceipt: string | null): Promise<{ opened: LocalWorkspaceOpen; anchor: ContinuityAnchor | null }> {
   validateWorkspaceId(id);
   await ensureLegacyMigration();
   const db = await openDatabase();
   try {
-    const manifest = await readOne<LocalWorkspaceManifest>(db, MANIFEST_STORE, id);
+    const bundle = await readWorkspaceBundle(db, id);
+    const manifest = bundle.manifest;
     if (!manifest || !validManifestShape(manifest)) throw new Error("The selected local workspace is unavailable.");
-    const active = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, manifest.activeGeneration]);
+    const active = bundle.active;
     const opened = await verifyGeneration(active, manifest.payloadDigest);
-    if (opened.status === "verified") return { workspace: opened.workspace, manifest, token: manifest.token, recoveredFromPrevious: false, openedGeneration: manifest.activeGeneration };
+    if (opened.status === "verified") {
+      if (!activeManifestMetadataMatches(manifest, active, opened.workspace)) throw new Error("Workspace integrity verification stopped because manifest display metadata disagrees with the verified active generation. Inspect quarantined storage before continuing.");
+      const continuity = await continuityForOpenedGeneration(bundle.anchor, id, opened.workspace, manifest.activeGeneration, manifest.payloadDigest, independentReceipt);
+      return { opened: { workspace: opened.workspace, manifest, token: manifest.token, recoveredFromPrevious: false, openedGeneration: manifest.activeGeneration, continuity }, anchor: bundle.anchor ?? null };
+    }
     if (opened.status === "digest-disagreement") throw new Error("Workspace integrity verification stopped because the active generation and its manifest digest disagree. No fallback generation was opened.");
     if (manifest.previousGeneration !== null) {
       if (!manifest.previousPayloadDigest) throw new Error("Workspace integrity verification failed. This legacy manifest does not bind its fallback generation, so the fallback was not opened.");
-      const previous = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, manifest.previousGeneration]);
+      const previous = bundle.previous;
       const recovered = await verifyGeneration(previous, manifest.previousPayloadDigest);
-      if (recovered.status === "verified") return { workspace: recovered.workspace, manifest, token: manifest.token, recoveredFromPrevious: true, openedGeneration: manifest.previousGeneration };
+      if (recovered.status === "verified" && previous) {
+        const continuity = await continuityForOpenedGeneration(bundle.anchor, id, recovered.workspace, manifest.previousGeneration, manifest.previousPayloadDigest, independentReceipt);
+        return { opened: { workspace: recovered.workspace, manifest: openedGenerationManifest(manifest, previous, recovered.workspace), token: manifest.token, recoveredFromPrevious: true, openedGeneration: manifest.previousGeneration, continuity }, anchor: bundle.anchor ?? null };
+      }
     }
     throw new Error("Workspace integrity verification failed. No verified local generation is available.");
   } finally { db.close(); }
+}
+
+export async function openContinuityVerifiedWorkspace(id: string, independentReceipt: string | null = null): Promise<LocalWorkspaceOpen> {
+  const opened = await openLocalWorkspace(id, independentReceipt);
+  if (opened.recoveredFromPrevious) throw new Error("The workspace opened from a recovery generation and cannot produce ordinary outward artifacts.");
+  if (opened.continuity.status !== "continuity-corroborated") {
+    throw new Error(`Independent continuity receipt corroboration is required before ordinary outward artifacts can be generated. ${opened.continuity.reason}`);
+  }
+  return opened;
 }
 
 export async function deleteLocalWorkspace(id: string, expectedToken?: string): Promise<void> {
@@ -254,7 +399,7 @@ export async function deleteLocalWorkspace(id: string, expectedToken?: string): 
   await ensureLegacyMigration();
   const db = await openDatabase();
   try {
-    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE], "readwrite", (transaction, resolve, reject) => {
+    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE], "readwrite", (transaction, resolve, reject) => {
       const manifests = transaction.objectStore(MANIFEST_STORE);
       const generations = transaction.objectStore(GENERATION_STORE);
       const request = manifests.get(id);
@@ -265,6 +410,7 @@ export async function deleteLocalWorkspace(id: string, expectedToken?: string): 
         if (expectedToken && manifest.token !== expectedToken) return reject(new Error("This local workspace changed in another tab. Open it again before deleting."));
         manifests.delete(id);
         generations.delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
+        transaction.objectStore(CONTINUITY_STORE).delete(id);
         resolve(undefined);
       };
     });
@@ -276,9 +422,10 @@ export async function clearLocalWorkspaces(): Promise<void> {
   await ensureLegacyMigration();
   const db = await openDatabase();
   try {
-    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE, LEGACY_STORE], "readwrite", (transaction, resolve) => {
+    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE, LEGACY_STORE], "readwrite", (transaction, resolve) => {
       transaction.objectStore(MANIFEST_STORE).clear();
       transaction.objectStore(GENERATION_STORE).clear();
+      transaction.objectStore(CONTINUITY_STORE).clear();
       transaction.objectStore(LEGACY_STORE).clear();
       resolve(undefined);
     });
@@ -326,12 +473,28 @@ async function writeWorkspace(id: string, input: Workspace, expectedToken: strin
   const db = await openDatabase();
   let result!: LocalWorkspaceManifest;
   try {
-    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE], "readwrite", (transaction, resolve, reject) => {
+    const saveBase = create ? null : await requireVerifiedSaveBase(db, id, expectedToken, recoveredGeneration, workspace);
+    if (saveBase && recoveredGeneration === null && payloadDigest === saveBase.manifest.payloadDigest) return saveBase.manifest;
+    const nextAnchor = saveBase?.anchor
+      ? await extendContinuityAnchor(saveBase.anchor, {
+          previousWorkspace: saveBase.workspace,
+          workspace,
+          generation: saveBase.manifest.activeGeneration + 1,
+          payloadDigest,
+        })
+      : null;
+    await completeTransaction(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE], "readwrite", (transaction, resolve, reject) => {
       const manifests = transaction.objectStore(MANIFEST_STORE);
       const generations = transaction.objectStore(GENERATION_STORE);
+      const anchors = transaction.objectStore(CONTINUITY_STORE);
       const allRequest = manifests.getAll(undefined, MAX_STORAGE_INSPECTION_MANIFESTS + 1);
+      const anchorRequest = anchors.get(id);
+      let manifestsReady = false;
+      let anchorReady = false;
       allRequest.onerror = () => reject(storageError(allRequest.error));
-      allRequest.onsuccess = () => {
+      anchorRequest.onerror = () => reject(storageError(anchorRequest.error));
+      const commit = () => {
+        if (!manifestsReady || !anchorReady) return;
         const raw = allRequest.result as unknown[];
         if (raw.length > MAX_STORAGE_INSPECTION_MANIFESTS) return reject(new Error(`Local storage manifest inspection exceeds ${MAX_STORAGE_INSPECTION_MANIFESTS} entries.`));
         if (!allowQuarantine && raw.some((item) => !validManifestShape(item))) return reject(new Error("Browser-local storage contains an invalid manifest. Inspect quarantined storage before saving."));
@@ -340,12 +503,16 @@ async function writeWorkspace(id: string, input: Workspace, expectedToken: strin
         if (create && current) return reject(new Error("A local workspace with this identifier already exists."));
         if (!create && !current) return reject(new Error("The selected local workspace no longer exists."));
         if (!create && current?.token !== expectedToken) return reject(new Error("This local workspace changed in another tab. Open it again before saving."));
+        const currentAnchor = anchorRequest.result as ContinuityAnchor | undefined;
+        if ((currentAnchor?.digest ?? null) !== (saveBase?.anchor?.digest ?? null)) return reject(new Error("The continuity anchor changed in another tab. Reopen the workspace before saving."));
         if (recoveredGeneration !== null && current?.previousGeneration !== recoveredGeneration) return reject(new Error("The verified recovery generation changed. Open the local workspace again before saving."));
         if (recoveredGeneration !== null && !current?.previousPayloadDigest) return reject(new Error("The fallback generation is not bound by this manifest and cannot be used for recovery."));
         if (create && all.length >= MAX_LOCAL_WORKSPACES) return reject(new Error(`This browser already contains ${MAX_LOCAL_WORKSPACES} local workspaces.`));
         if (all.some((item) => item.id !== id && item.normalizedName === normalizedName)) return reject(new Error("A local workspace with this name already exists."));
 
-        const generation = (current?.activeGeneration ?? 0) + 1;
+        const currentGeneration = current?.activeGeneration ?? 0;
+        if (!Number.isSafeInteger(currentGeneration) || currentGeneration >= Number.MAX_SAFE_INTEGER) return reject(new Error("The active local generation cannot be safely incremented. Preserve the stored generations and reconstruct the workspace under a new identifier."));
+        const generation = currentGeneration + 1;
         const revision = activeRevision(workspace);
         result = {
           id, name: workspace.name, normalizedName, createdAt: current?.createdAt ?? savedAt, savedAt,
@@ -358,15 +525,118 @@ async function writeWorkspace(id: string, input: Workspace, expectedToken: strin
         };
         generations.put({ workspaceId: id, generation, savedAt, payloadDigest, bytes, payload: structuredClone(workspace) } satisfies StoredGeneration);
         manifests.put(result);
+        if (nextAnchor) anchors.put(nextAnchor);
         // A failed active generation is retained during recovery. Opening a verified
         // fallback must not destroy the bytes needed for later diagnosis or salvage.
         if (recoveredGeneration === null && current?.previousGeneration !== null && current?.previousGeneration !== undefined) generations.delete([id, current.previousGeneration]);
         resolve(undefined);
       };
+      allRequest.onsuccess = () => { manifestsReady = true; commit(); };
+      anchorRequest.onsuccess = () => { anchorReady = true; commit(); };
     });
   } finally { db.close(); }
   announceChange();
   return result;
+}
+
+type VerifiedSaveBase = { manifest: LocalWorkspaceManifest; workspace: Workspace; anchor: ContinuityAnchor | null };
+
+async function requireVerifiedSaveBase(db: IDBDatabase, id: string, expectedToken: string | null, recoveredGeneration: number | null, workspace: Workspace): Promise<VerifiedSaveBase> {
+  const manifest = await readOne<LocalWorkspaceManifest>(db, MANIFEST_STORE, id);
+  if (!manifest || !validManifestShape(manifest)) throw new Error("The selected local workspace manifest no longer verifies. Reopen or inspect storage before saving.");
+  if (manifest.token !== expectedToken) throw new Error("This local workspace changed in another tab. Open it again before saving.");
+
+  const generation = recoveredGeneration ?? manifest.activeGeneration;
+  const expectedDigest = recoveredGeneration === null ? manifest.payloadDigest : manifest.previousPayloadDigest;
+  if (recoveredGeneration !== null && manifest.previousGeneration !== recoveredGeneration) throw new Error("The verified recovery generation changed. Open the local workspace again before saving.");
+  if (!expectedDigest) {
+    const reason = recoveredGeneration === null
+      ? "The manifest-bound generation is missing its digest"
+      : "The fallback generation is not bound by this manifest";
+    throw new Error(`${reason} and cannot be rotated during save.`);
+  }
+  const stored = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, generation]);
+  const verified = await verifyGeneration(stored, expectedDigest);
+  if (verified.status !== "verified") throw new Error("The manifest-bound generation no longer verifies. Reopen or inspect storage before saving so the last verified fallback is not rotated away.");
+  const anchorValue = await readOne<ContinuityAnchor>(db, CONTINUITY_STORE, id);
+  let anchor: ContinuityAnchor | null = null;
+  if (anchorValue) {
+    if (recoveredGeneration !== null) throw new Error("An anchored workspace cannot be repaired in place from an older generation. Preserve the failed lineage and create an explicitly accepted new baseline.");
+    const continuity = await verifyContinuityAnchor(anchorValue, {
+      workspace: verified.workspace,
+      workspaceId: id,
+      lineageId: anchorValue.lineageId,
+      generation: manifest.activeGeneration,
+      payloadDigest: manifest.payloadDigest,
+    });
+    if (continuity.status !== "continuity-verified-local") throw new Error(`The current saved workspace does not match its retained continuity anchor. ${continuity.reason}`);
+    anchor = anchorValue;
+  }
+
+  if (recoveredGeneration !== null) {
+    const active = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, manifest.activeGeneration]);
+    const activeVerification = await verifyGeneration(active, manifest.payloadDigest);
+    if (activeVerification.status === "verified") throw new Error("Recovery save refused because the active generation still verifies. Use a normal save or create a new workspace instead.");
+    if (activeVerification.status === "digest-disagreement") throw new Error("Recovery save refused because the active generation and manifest digest disagree. Inspect quarantined storage instead of substituting slot state.");
+    if (boundedWorkspaceSerialization(workspace) !== boundedWorkspaceSerialization(verified.workspace)) throw new Error("Recovery save input does not match the manifest-bound verified fallback generation. Create a new workspace for altered recovery content.");
+  }
+
+  // A normal save rotates the active generation into the fallback slot and
+  // deletes the currently referenced fallback. Verify that exact fallback,
+  // including its manifest-bound digest, before permitting the destructive
+  // part of the rotation. Missing, corrupt, or legacy-unbound bytes remain in
+  // place for explicit storage inspection and recovery.
+  if (recoveredGeneration === null && manifest.previousGeneration !== null) {
+    if (!manifest.previousPayloadDigest) throw new Error("The previous generation is not bound by this manifest and cannot be rotated during save. Inspect storage before continuing.");
+    const previous = await readOne<StoredGeneration>(db, GENERATION_STORE, [id, manifest.previousGeneration]);
+    const verifiedPrevious = await verifyGeneration(previous, manifest.previousPayloadDigest);
+    if (verifiedPrevious.status !== "verified") throw new Error("The manifest-bound previous generation no longer verifies and cannot be rotated during save. Inspect storage before continuing; no stored generation was deleted.");
+  }
+  return { manifest, workspace: verified.workspace, anchor };
+}
+
+function activeManifestMetadataMatches(manifest: LocalWorkspaceManifest, stored: StoredGeneration | undefined, workspace: Workspace): boolean {
+  if (!stored || stored.workspaceId !== manifest.id || stored.generation !== manifest.activeGeneration) return false;
+  try {
+    const serialized = boundedWorkspaceSerialization(workspace);
+    const bytes = new TextEncoder().encode(serialized).byteLength;
+    const revision = activeRevision(workspace);
+    return stored.payloadDigest === manifest.payloadDigest
+      && stored.savedAt === manifest.savedAt
+      && stored.bytes === bytes
+      && manifest.name === workspace.name
+      && manifest.normalizedName === normalizeName(workspace.name)
+      && manifest.bytes === bytes
+      && manifest.recordCount === revision.records.length
+      && manifest.archiveCount === (revision.archiveUnits?.length ?? 0)
+      && manifest.serviceCount === (revision.serviceRecords?.length ?? 0)
+      && manifest.incidentCount === workspace.incidents.length
+      && manifest.revisionCount === workspace.revisions.length
+      && manifest.auditCount === workspace.audit.length;
+  } catch { return false; }
+}
+
+function openedGenerationManifest(source: LocalWorkspaceManifest, stored: StoredGeneration, workspace: Workspace): LocalWorkspaceManifest {
+  const revision = activeRevision(workspace);
+  return {
+    id: source.id,
+    name: workspace.name,
+    normalizedName: normalizeName(workspace.name),
+    createdAt: workspace.createdAt,
+    savedAt: stored.savedAt,
+    activeGeneration: stored.generation,
+    previousGeneration: null,
+    previousPayloadDigest: null,
+    payloadDigest: stored.payloadDigest,
+    bytes: stored.bytes,
+    recordCount: revision.records.length,
+    archiveCount: revision.archiveUnits?.length ?? 0,
+    serviceCount: revision.serviceRecords?.length ?? 0,
+    incidentCount: workspace.incidents.length,
+    revisionCount: workspace.revisions.length,
+    auditCount: workspace.audit.length,
+    token: source.token,
+  };
 }
 
 type GenerationVerification =
@@ -384,6 +654,25 @@ async function verifyGeneration(value: StoredGeneration | undefined, expectedDig
     if (!matchesGeneration) return { status: "unavailable" };
     return { status: "verified", workspace: await validateWorkspaceSnapshot(value.payload) };
   } catch { return { status: "unavailable" }; }
+}
+
+async function continuityForOpenedGeneration(
+  anchor: ContinuityAnchor | undefined,
+  workspaceId: string,
+  workspace: Workspace,
+  generation: number,
+  payloadDigest: string,
+  independentReceipt: string | null,
+): Promise<ContinuityVerification> {
+  if (!anchor) return { status: "unanchored", reason: "No separately retained local continuity checkpoint exists. Explicitly accept a baseline before ordinary outward use.", anchorDigest: null };
+  return verifyContinuityAnchor(anchor, {
+    workspace,
+    workspaceId,
+    lineageId: anchor.lineageId,
+    generation,
+    payloadDigest,
+    independentReceipt,
+  });
 }
 
 async function verifiedRecoveryCandidate(value: StoredGeneration | undefined, workspaceId: string, generation: number): Promise<LocalWorkspaceRecoveryCandidate | null> {
@@ -567,6 +856,7 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(LEGACY_STORE)) db.createObjectStore(LEGACY_STORE);
       if (!db.objectStoreNames.contains(MANIFEST_STORE)) db.createObjectStore(MANIFEST_STORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(GENERATION_STORE)) db.createObjectStore(GENERATION_STORE, { keyPath: ["workspaceId", "generation"] });
+      if (!db.objectStoreNames.contains(CONTINUITY_STORE)) db.createObjectStore(CONTINUITY_STORE, { keyPath: "workspaceId" });
     };
     request.onsuccess = () => { const db = request.result; db.onversionchange = () => db.close(); resolve(db); };
     request.onerror = () => reject(storageError(request.error));
@@ -598,6 +888,52 @@ function readOne<T>(db: IDBDatabase, storeName: string, key: IDBValidKey | IDBKe
     const request = transaction.objectStore(storeName).get(key);
     request.onsuccess = () => resolve(request.result as T | undefined);
     request.onerror = () => reject(storageError(request.error));
+  });
+}
+
+/** Read manifest, generations, and continuity anchor from one IndexedDB snapshot. */
+function readWorkspaceBundle(db: IDBDatabase, id: string): Promise<StoredWorkspaceBundle> {
+  return completeTransaction<StoredWorkspaceBundle>(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE], "readonly", (transaction, resolve, reject) => {
+    const manifests = transaction.objectStore(MANIFEST_STORE);
+    const generations = transaction.objectStore(GENERATION_STORE);
+    const anchors = transaction.objectStore(CONTINUITY_STORE);
+    const bundle: StoredWorkspaceBundle = { manifest: undefined, active: undefined, previous: undefined, anchor: undefined };
+    let pending = 2;
+    const completeOne = () => {
+      pending -= 1;
+      if (pending === 0) resolve(bundle);
+    };
+    const fail = (request: IDBRequest) => reject(storageError(request.error));
+    const manifestRequest = manifests.get(id);
+    const anchorRequest = anchors.get(id);
+    manifestRequest.onerror = () => fail(manifestRequest);
+    anchorRequest.onerror = () => fail(anchorRequest);
+    anchorRequest.onsuccess = () => {
+      bundle.anchor = anchorRequest.result as ContinuityAnchor | undefined;
+      completeOne();
+    };
+    manifestRequest.onsuccess = () => {
+      bundle.manifest = manifestRequest.result as LocalWorkspaceManifest | undefined;
+      if (bundle.manifest && validManifestShape(bundle.manifest)) {
+        pending += 1;
+        const activeRequest = generations.get([id, bundle.manifest.activeGeneration]);
+        activeRequest.onerror = () => fail(activeRequest);
+        activeRequest.onsuccess = () => {
+          bundle.active = activeRequest.result as StoredGeneration | undefined;
+          completeOne();
+        };
+        if (bundle.manifest.previousGeneration !== null) {
+          pending += 1;
+          const previousRequest = generations.get([id, bundle.manifest.previousGeneration]);
+          previousRequest.onerror = () => fail(previousRequest);
+          previousRequest.onsuccess = () => {
+            bundle.previous = previousRequest.result as StoredGeneration | undefined;
+            completeOne();
+          };
+        }
+      }
+      completeOne();
+    };
   });
 }
 

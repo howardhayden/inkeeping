@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
 import test from "node:test";
-import { activeRevision, createFixtureWorkspace } from "../app/lab-core.ts";
+import { activeRevision, createBlankWorkspace, createFixtureWorkspace } from "../app/lab-core.ts";
 import {
   WORKSPACE_BACKUP_MIME,
   WORKSPACE_BACKUP_PROTECTION,
   WORKSPACE_BACKUP_SCHEMA,
   makeWorkspaceBackup,
   reviewWorkspaceBackup,
+  verifyWorkspaceBackupReviewBinding,
   workspaceBackupFilename,
 } from "../app/workspace-backups.ts";
 
@@ -29,7 +30,34 @@ test("workspace backups round-trip the complete validated state", async () => {
   assert.deepEqual(review.workspace, workspace);
   assert.equal(activeRevision(review.workspace).serviceRecords.length, 8);
   assert.match(review.summary, /catalog.*archival.*service records/i);
+  assert.match(review.summary, /internal consistency verified.*authenticity.*not established/i);
+  assert.equal(await verifyWorkspaceBackupReviewBinding(review), true);
   assert.equal(workspaceBackupFilename("Rare Books / 2026"), "Rare-Books-2026.in-keeping-workspace-backup.json");
+});
+
+test("workspace-backup apply capability cannot be cloned or paired with substituted state", async () => {
+  const firstText = await makeWorkspaceBackup(await createFixtureWorkspace(), AT);
+  const first = await reviewWorkspaceBackup(new File([firstText], "first.json", { type: WORKSPACE_BACKUP_MIME }));
+  const secondWorkspace = await createBlankWorkspace("Substituted but otherwise valid review object");
+  const secondText = await makeWorkspaceBackup(secondWorkspace, AT);
+  const second = await reviewWorkspaceBackup(new File([secondText], "second.json", { type: WORKSPACE_BACKUP_MIME }));
+
+  assert.equal(await verifyWorkspaceBackupReviewBinding(first), true);
+  assert.equal(await verifyWorkspaceBackupReviewBinding(structuredClone(first)), false);
+  const substituted = structuredClone(first);
+  substituted.workspace = second.workspace;
+  substituted.digest = second.digest;
+  assert.equal(await verifyWorkspaceBackupReviewBinding(substituted), false);
+});
+
+test("workspace-backup capability rejects non-JSON mutations that collide during stringification", async () => {
+  const text = await makeWorkspaceBackup(await createBlankWorkspace("Strict backup binding"), AT);
+  const review = await reviewWorkspaceBackup(new File([text], "strict.json", { type: WORKSPACE_BACKUP_MIME }));
+  assert.equal(await verifyWorkspaceBackupReviewBinding(review), true);
+
+  review.workspace.revisions[0].parentId = Number.NaN;
+  assert.equal(JSON.stringify(review.workspace.revisions[0].parentId), "null", "the attack collides with the reviewed null under JSON.stringify");
+  assert.equal(await verifyWorkspaceBackupReviewBinding(review), false);
 });
 
 test("legacy version-one backup envelopes remain reviewable without changing their payload", async () => {
@@ -95,6 +123,20 @@ test("workspace-backup errors stay bounded under oversized hostile keys", async 
   assert.equal(review.blocked, true);
   assert.ok(review.summary.length <= 500);
   assert.match(review.summary, /oversized field name/i);
+});
+
+test("workspace-backup JSON quarantine rejects duplicate decoded identities and lone surrogates", async () => {
+  const text = await makeWorkspaceBackup(await createBlankWorkspace("Backup JSON quarantine"), AT);
+  assert.equal(text[0], "{", "workspace backups must serialize as a top-level JSON object");
+  const duplicate = `{"schema":"forged",${text.slice(1)}`;
+  const duplicateReview = await reviewWorkspaceBackup(new File([duplicate], "duplicate-schema.json", { type: WORKSPACE_BACKUP_MIME }));
+  assert.equal(duplicateReview.blocked, true);
+  assert.match(duplicateReview.summary, /duplicate member name "schema"/i);
+
+  const surrogate = text.replace(WORKSPACE_BACKUP_SCHEMA, "\\uD800");
+  const surrogateReview = await reviewWorkspaceBackup(new File([surrogate], "surrogate-schema.json", { type: WORKSPACE_BACKUP_MIME }));
+  assert.equal(surrogateReview.blocked, true);
+  assert.match(surrogateReview.summary, /unpaired Unicode surrogate/i);
 });
 
 test("workspace-backup review enforces extension, MIME, size, and UTF-8 boundaries", async () => {

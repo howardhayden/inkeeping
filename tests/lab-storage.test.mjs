@@ -3,23 +3,40 @@ import test from "node:test";
 import "fake-indexeddb/auto";
 import {
   clearLocalWorkspaces,
+  corroborateLocalContinuityReceipt,
   createLocalWorkspace,
   deleteLocalWorkspace,
+  initializeLocalContinuityAnchor,
   inspectLocalWorkspaceRecoveryCandidate,
   inspectLocalWorkspaceStorage,
   listLocalWorkspaces,
   LocalWorkspaceQuarantineError,
   openLocalWorkspace,
+  openContinuityVerifiedWorkspace,
+  makeLocalContinuityReceipt,
   reconstructLocalWorkspaceFromQuarantine,
   saveLocalWorkspace,
   saveRecoveredLocalWorkspace,
 } from "../app/lab-storage.ts";
 import { createBlankWorkspace, renameWorkspace } from "../app/lab-core.ts";
+import { CONTINUITY_ACKNOWLEDGMENT, createContinuityAnchor, parseContinuityReceipt } from "../app/continuity-anchor.ts";
 
 const DATABASE = "library-access-continuity-lab";
 const LEGACY_STORE = "workspaces";
 const MANIFEST_STORE = "workspace-manifests";
 const GENERATION_STORE = "workspace-generations";
+const CONTINUITY_STORE = "workspace-continuity-anchors";
+
+const continuityAcceptance = (overrides = {}) => ({
+  operatorRole: "Records continuity lead",
+  authorityReference: "TICKET-2026-001",
+  rationale: "Accept the reviewed local saved generation as the continuity baseline.",
+  sourceKind: "local-workspace",
+  sourcePayloadDigest: null,
+  sourceAnchorDigest: null,
+  acknowledgment: CONTINUITY_ACKNOWLEDGMENT,
+  ...overrides,
+});
 
 function deleteDatabase() {
   return new Promise((resolve, reject) => {
@@ -32,12 +49,13 @@ function deleteDatabase() {
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const request = globalThis.indexedDB.open(DATABASE, 2);
+    const request = globalThis.indexedDB.open(DATABASE, 3);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(LEGACY_STORE)) db.createObjectStore(LEGACY_STORE);
       if (!db.objectStoreNames.contains(MANIFEST_STORE)) db.createObjectStore(MANIFEST_STORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(GENERATION_STORE)) db.createObjectStore(GENERATION_STORE, { keyPath: ["workspaceId", "generation"] });
+      if (!db.objectStoreNames.contains(CONTINUITY_STORE)) db.createObjectStore(CONTINUITY_STORE, { keyPath: "workspaceId" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -96,6 +114,14 @@ async function deleteStoreValue(storeName, key) {
   db.close();
 }
 
+async function putStoreValue(storeName, value) {
+  const db = await openDatabase();
+  const transaction = db.transaction([storeName], "readwrite");
+  transaction.objectStore(storeName).put(value);
+  await transactionDone(transaction);
+  db.close();
+}
+
 async function putInvalidManifests(count) {
   const db = await openDatabase();
   const transaction = db.transaction([MANIFEST_STORE], "readwrite");
@@ -145,6 +171,103 @@ test("legacy workspaces are claimed once and moved atomically across tabs", asyn
   assert.equal(await readStore(LEGACY_STORE, "slot-b"), undefined);
 });
 
+test("continuity baselines are explicit, advance with verified saves, and yield independently retainable receipts", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Anchored continuity register");
+  const created = await createLocalWorkspace(first);
+  const unanchored = await openLocalWorkspace(created.id);
+  assert.equal(unanchored.continuity.status, "unanchored");
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /continuity verification|required.*checkpoint/i);
+
+  const accepted = await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
+  assert.equal(accepted.status, "continuity-verified-local");
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /independent continuity receipt corroboration/i);
+  const firstAnchor = await readStore(CONTINUITY_STORE, created.id);
+  assert.equal(firstAnchor.sequence, 1);
+
+  const receiptText = await makeLocalContinuityReceipt(created.id, created.token);
+  const receipt = parseContinuityReceipt(receiptText);
+  assert.equal(receipt.anchorDigest, firstAnchor.digest);
+  assert.equal(receipt.workspaceId, created.id);
+  assert.equal((await corroborateLocalContinuityReceipt(created.id, created.token, receiptText)).status, "continuity-corroborated");
+  const anchored = await openContinuityVerifiedWorkspace(created.id, receiptText);
+  assert.equal(anchored.continuity.status, "continuity-corroborated");
+
+  const nextWorkspace = await renameWorkspace(first, "Anchored continuity register revised");
+  const saved = await saveLocalWorkspace(created.id, nextWorkspace, created.token);
+  const nextAnchor = await readStore(CONTINUITY_STORE, created.id);
+  assert.equal(nextAnchor.sequence, 2);
+  assert.equal(nextAnchor.previousAnchorDigest, firstAnchor.digest);
+  assert.equal(nextAnchor.previousCheckpoint.payloadDigest, created.payloadDigest);
+  assert.equal(nextAnchor.activeCheckpoint.payloadDigest, saved.payloadDigest);
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /independent continuity receipt corroboration/i);
+  await assert.rejects(corroborateLocalContinuityReceipt(created.id, saved.token, receiptText), /did not corroborate|stale/i);
+  const currentReceipt = await makeLocalContinuityReceipt(created.id, saved.token);
+  assert.equal((await corroborateLocalContinuityReceipt(created.id, saved.token, currentReceipt)).status, "continuity-corroborated");
+  assert.equal((await openContinuityVerifiedWorkspace(created.id, currentReceipt)).workspace.name, "Anchored continuity register revised");
+});
+
+test("a wholly regenerated but internally consistent history cannot satisfy the retained local anchor", async () => {
+  await clearLocalWorkspaces();
+  const original = await createBlankWorkspace("Original anchored history");
+  const created = await createLocalWorkspace(original);
+  await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
+  const independentlyRetainedReceipt = await makeLocalContinuityReceipt(created.id, created.token);
+
+  const fabricated = await createBlankWorkspace("Fabricated replacement history");
+  const serialized = JSON.stringify(fabricated);
+  const digest = await sha256Hex(serialized);
+  const bytes = new TextEncoder().encode(serialized).byteLength;
+  await updateStore(GENERATION_STORE, [created.id, created.activeGeneration], (generation) => ({
+    ...generation,
+    payloadDigest: digest,
+    bytes,
+    payload: structuredClone(fabricated),
+  }));
+  await updateStore(MANIFEST_STORE, created.id, (manifest) => ({
+    ...manifest,
+    name: fabricated.name,
+    normalizedName: fabricated.name.toLocaleLowerCase("en-US"),
+    payloadDigest: digest,
+    bytes,
+    recordCount: 0,
+    archiveCount: 0,
+    serviceCount: 0,
+    incidentCount: 0,
+    revisionCount: fabricated.revisions.length,
+    auditCount: fabricated.audit.length,
+  }));
+
+  const diagnostic = await openLocalWorkspace(created.id);
+  assert.equal(diagnostic.workspace.name, "Fabricated replacement history");
+  assert.equal(diagnostic.continuity.status, "continuity-failure");
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /continuity verification.*anchor|checkpoint|does not match/i);
+
+  const replacementAnchor = await createContinuityAnchor({
+    workspace: fabricated,
+    workspaceId: created.id,
+    lineageId: `lineage-${crypto.randomUUID()}`,
+    generation: created.activeGeneration,
+    payloadDigest: digest,
+    initialAcceptance: { ...continuityAcceptance(), browserTime: "2026-08-31T00:00:00.000Z" },
+  });
+  await putStoreValue(CONTINUITY_STORE, replacementAnchor);
+  assert.equal((await openLocalWorkspace(created.id)).continuity.status, "continuity-verified-local", "coherent replacement of every local store is locally indistinguishable");
+  await assert.rejects(corroborateLocalContinuityReceipt(created.id, created.token, independentlyRetainedReceipt), /did not corroborate|stale|another anchor/i);
+});
+
+test("continuity acceptance cannot silently replace an existing anchor and deletion removes only the local checkpoint", async () => {
+  await clearLocalWorkspaces();
+  const workspace = await createBlankWorkspace("Immutable local anchor");
+  const created = await createLocalWorkspace(workspace);
+  await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
+  const anchor = await readStore(CONTINUITY_STORE, created.id);
+  await assert.rejects(initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance({ rationale: "Attempted silent re-anchor." })), /already has a continuity anchor|cannot be silently re-anchored/i);
+  assert.deepEqual(await readStore(CONTINUITY_STORE, created.id), anchor);
+  await deleteLocalWorkspace(created.id, created.token);
+  assert.equal(await readStore(CONTINUITY_STORE, created.id), undefined);
+});
+
 test("saves bind both retained generations, reject stale tokens, and preserve failed bytes during recovery", async () => {
   await clearLocalWorkspaces();
   const first = await createBlankWorkspace("Continuity register");
@@ -174,6 +297,172 @@ test("saves bind both retained generations, reject stale tokens, and preserve fa
   assert.ok(await readStore(GENERATION_STORE, [created.id, repaired.activeGeneration]));
   assert.ok(await readStore(GENERATION_STORE, [created.id, 1]));
   assert.equal((await openLocalWorkspace(created.id)).recoveredFromPrevious, false);
+});
+
+test("normal save refuses to rotate away the last verified fallback when the active generation vanished", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Vanishing active generation");
+  const created = await createLocalWorkspace(first);
+  const second = await renameWorkspace(first, "Vanishing active generation revised");
+  const saved = await saveLocalWorkspace(created.id, second, created.token);
+  const openTab = await openLocalWorkspace(created.id);
+
+  await deleteStoreValue(GENERATION_STORE, [created.id, saved.activeGeneration]);
+  const third = await renameWorkspace(openTab.workspace, "Stale tab must not rotate fallback");
+  await assert.rejects(saveLocalWorkspace(created.id, third, openTab.token), /generation.*verify|integrity|reopen/i);
+
+  const manifest = await readStore(MANIFEST_STORE, created.id);
+  assert.equal(manifest.activeGeneration, saved.activeGeneration);
+  assert.equal(manifest.previousGeneration, created.activeGeneration);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]));
+});
+
+test("normal save refuses to delete a corrupt manifest-bound previous generation", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Corrupt previous generation");
+  const created = await createLocalWorkspace(first);
+  const second = await renameWorkspace(first, "Corrupt previous generation revised");
+  const saved = await saveLocalWorkspace(created.id, second, created.token);
+  const opened = await openLocalWorkspace(created.id);
+
+  await corruptGeneration(created.id, created.activeGeneration);
+  const corruptPrevious = await readStore(GENERATION_STORE, [created.id, created.activeGeneration]);
+  const third = await renameWorkspace(opened.workspace, "Corrupt previous generation must remain quarantined");
+  await assert.rejects(saveLocalWorkspace(created.id, third, opened.token), /previous generation.*verif|cannot be rotated/i);
+
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), saved);
+  assert.deepEqual(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]), corruptPrevious);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]));
+});
+
+test("normal save refuses to rotate a missing manifest-bound previous generation", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Missing previous generation");
+  const created = await createLocalWorkspace(first);
+  const second = await renameWorkspace(first, "Missing previous generation revised");
+  const saved = await saveLocalWorkspace(created.id, second, created.token);
+  const opened = await openLocalWorkspace(created.id);
+
+  await deleteStoreValue(GENERATION_STORE, [created.id, created.activeGeneration]);
+  const third = await renameWorkspace(opened.workspace, "Missing previous generation must block rotation");
+  await assert.rejects(saveLocalWorkspace(created.id, third, opened.token), /previous generation.*verif|cannot be rotated/i);
+
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), saved);
+  assert.equal(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]), undefined);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]));
+});
+
+test("valid-shaped manifest display metadata must exactly match its verified active generation", async () => {
+  const mutations = [
+    ["name", (manifest) => ({ ...manifest, name: "Fabricated display name", normalizedName: "fabricated display name" })],
+    ["savedAt", (manifest) => ({ ...manifest, savedAt: new Date(Date.parse(manifest.savedAt) + 1000).toISOString() })],
+    ["bytes", (manifest) => ({ ...manifest, bytes: manifest.bytes + 1 })],
+    ["recordCount", (manifest) => ({ ...manifest, recordCount: manifest.recordCount + 1 })],
+    ["archiveCount", (manifest) => ({ ...manifest, archiveCount: manifest.archiveCount + 1 })],
+    ["serviceCount", (manifest) => ({ ...manifest, serviceCount: manifest.serviceCount + 1 })],
+    ["incidentCount", (manifest) => ({ ...manifest, incidentCount: manifest.incidentCount + 1 })],
+    ["revisionCount", (manifest) => ({ ...manifest, revisionCount: manifest.revisionCount + 1 })],
+    ["auditCount", (manifest) => ({ ...manifest, auditCount: manifest.auditCount + 1 })],
+  ];
+
+  for (const [field, mutate] of mutations) {
+    await clearLocalWorkspaces();
+    const created = await createLocalWorkspace(await createBlankWorkspace(`Metadata binding ${field}`));
+    const stored = await readStore(GENERATION_STORE, [created.id, created.activeGeneration]);
+    await updateStore(MANIFEST_STORE, created.id, mutate);
+
+    await assert.rejects(listLocalWorkspaces(), LocalWorkspaceQuarantineError, `${field} mismatch must not list`);
+    const inspection = await inspectLocalWorkspaceStorage();
+    assert.equal(inspection.workspaces.some((manifest) => manifest.id === created.id), false, `${field} mismatch must not surface a display manifest`);
+    assert.deepEqual(inspection.quarantine[0].reasons, ["invalid-manifest"]);
+    assert.deepEqual(inspection.quarantine[0].generations, [created.activeGeneration]);
+    await assert.rejects(openLocalWorkspace(created.id), /manifest.*metadata.*disagree|integrity/i, `${field} mismatch must not open`);
+    assert.deepEqual(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]), stored, `${field} mismatch must preserve stored bytes`);
+  }
+});
+
+test("missing active storage never surfaces fabricated manifest metadata for a verified fallback", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Verified fallback identity");
+  const created = await createLocalWorkspace(first);
+  const second = await renameWorkspace(first, "Newer active identity");
+  const saved = await saveLocalWorkspace(created.id, second, created.token);
+
+  await updateStore(MANIFEST_STORE, created.id, (manifest) => ({
+    ...manifest,
+    name: "Fabricated authority label",
+    normalizedName: "fabricated authority label",
+    recordCount: 999,
+  }));
+  await deleteStoreValue(GENERATION_STORE, [created.id, saved.activeGeneration]);
+
+  const inspection = await inspectLocalWorkspaceStorage();
+  assert.equal(inspection.workspaces.some((manifest) => manifest.id === created.id), false);
+  assert.deepEqual(inspection.quarantine[0].reasons, ["missing-active-generation"]);
+  assert.deepEqual(inspection.quarantine[0].generations, [created.activeGeneration]);
+
+  const candidate = await inspectLocalWorkspaceRecoveryCandidate(created.id, created.activeGeneration);
+  assert.equal(candidate.name, "Verified fallback identity");
+  assert.equal(candidate.recordCount, 0);
+
+  const opened = await openLocalWorkspace(created.id);
+  assert.equal(opened.recoveredFromPrevious, true);
+  assert.equal(opened.workspace.name, "Verified fallback identity");
+  assert.equal(opened.manifest.name, "Verified fallback identity");
+  assert.equal(opened.manifest.recordCount, 0);
+  assert.equal(opened.manifest.activeGeneration, opened.openedGeneration);
+});
+
+test("save rejects an active generation that cannot be safely incremented", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Generation boundary");
+  const created = await createLocalWorkspace(first);
+  const stored = await readStore(GENERATION_STORE, [created.id, created.activeGeneration]);
+  await deleteStoreValue(GENERATION_STORE, [created.id, created.activeGeneration]);
+  await putStoreValue(GENERATION_STORE, { ...stored, generation: Number.MAX_SAFE_INTEGER });
+  await updateStore(MANIFEST_STORE, created.id, (manifest) => ({ ...manifest, activeGeneration: Number.MAX_SAFE_INTEGER }));
+  const boundaryManifest = await readStore(MANIFEST_STORE, created.id);
+  const opened = await openLocalWorkspace(created.id);
+
+  await assert.rejects(
+    saveLocalWorkspace(created.id, await renameWorkspace(opened.workspace, "Generation boundary blocked"), opened.token),
+    /generation.*safely increment/i,
+  );
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), boundaryManifest);
+  assert.deepEqual(await readStore(GENERATION_STORE, [created.id, Number.MAX_SAFE_INTEGER]), { ...stored, generation: Number.MAX_SAFE_INTEGER });
+});
+
+test("recovery save refuses to substitute a workspace while the active generation is healthy", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Healthy active recovery guard");
+  const created = await createLocalWorkspace(first);
+  const saved = await saveLocalWorkspace(created.id, await renameWorkspace(first, "Healthy active recovery guard revised"), created.token);
+
+  await assert.rejects(
+    saveRecoveredLocalWorkspace(created.id, first, saved.token, created.activeGeneration),
+    /active generation.*verif|recovery.*refused/i,
+  );
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), saved);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]));
+  assert.ok(await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]));
+});
+
+test("recovery save binds its input to the verified fallback generation", async () => {
+  await clearLocalWorkspaces();
+  const first = await createBlankWorkspace("Bound recovery input");
+  const created = await createLocalWorkspace(first);
+  const saved = await saveLocalWorkspace(created.id, await renameWorkspace(first, "Bound recovery input revised"), created.token);
+  await corruptGeneration(created.id, saved.activeGeneration);
+  const corruptActive = await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]);
+  const unrelated = await createBlankWorkspace("Unrelated recovery substitution");
+
+  await assert.rejects(
+    saveRecoveredLocalWorkspace(created.id, unrelated, saved.token, created.activeGeneration),
+    /recovery.*input.*verified fallback|does not match.*fallback/i,
+  );
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), saved);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]));
+  assert.deepEqual(await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]), corruptActive);
 });
 
 test("a substituted fallback generation is rejected against the manifest-bound digest", async () => {
@@ -216,7 +505,7 @@ test("an active generation and manifest digest disagreement never rolls back to 
   assert.equal((await readStore(GENERATION_STORE, [created.id, created.activeGeneration])).payload.name, "Digest authority");
 });
 
-test("legacy manifests without a fallback digest open an intact active generation and upgrade on save", async () => {
+test("legacy manifests without a fallback digest open an intact active generation but block destructive rotation", async () => {
   await clearLocalWorkspaces();
   const first = await createBlankWorkspace("Legacy digest manifest");
   const created = await createLocalWorkspace(first);
@@ -228,9 +517,14 @@ test("legacy manifests without a fallback digest open an intact active generatio
 
   const opened = await openLocalWorkspace(created.id);
   assert.equal(opened.workspace.name, "Legacy digest manifest current");
-  const upgraded = await saveLocalWorkspace(created.id, await renameWorkspace(opened.workspace, "Legacy digest manifest upgraded"), opened.token);
-  assert.equal(upgraded.previousGeneration, saved.activeGeneration);
-  assert.equal(upgraded.previousPayloadDigest, saved.payloadDigest);
+  const legacyManifest = await readStore(MANIFEST_STORE, created.id);
+  await assert.rejects(
+    saveLocalWorkspace(created.id, await renameWorkspace(opened.workspace, "Legacy digest manifest blocked"), opened.token),
+    /previous generation is not bound.*cannot be rotated/i,
+  );
+  assert.deepEqual(await readStore(MANIFEST_STORE, created.id), legacyManifest);
+  assert.ok(await readStore(GENERATION_STORE, [created.id, created.activeGeneration]));
+  assert.ok(await readStore(GENERATION_STORE, [created.id, saved.activeGeneration]));
 });
 
 test("legacy manifests never trust an unbound fallback generation", async () => {

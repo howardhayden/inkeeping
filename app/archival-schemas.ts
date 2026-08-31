@@ -1,4 +1,6 @@
 import { reviewPublicHttpsUrl } from "./public-url.ts";
+import { assertSafeJsonText } from "./json-safety.ts";
+import { assertIdentityText } from "./identity-safety.ts";
 import { assertSafeXmlText, assertXmlElementNamespaces } from "./xml-safety.ts";
 
 export type ArchiveFieldKind =
@@ -79,6 +81,7 @@ export type ArchiveExchangeFormat = "ead4" | "ead3" | "ead2002" | "archives-spac
 
 export type ArchiveImportReview = {
   filename: string;
+  bytes: number;
   digest: string;
   format: string;
   schema: ArchiveSchema | null;
@@ -86,6 +89,11 @@ export type ArchiveImportReview = {
   blocked: boolean;
   summary: string;
 };
+
+// A successful review is a short-lived capability, not a serializable claim.
+// The private binding prevents callers from substituting a coherent-looking
+// schema/record set after the file bytes were reviewed.
+const archiveImportReviewBindings = new WeakMap<ArchiveImportReview, string>();
 
 export const ARCHIVE_EXCHANGE_FORMATS: { value: ArchiveExchangeFormat; label: string; extension: string; mime: string }[] = [
   { value: "ead4", label: "EAD 4.0 XML", extension: "ead4.xml", mime: "application/xml" },
@@ -325,6 +333,18 @@ export function validateArchiveSet(schemas: ArchiveSchema[], units: ArchiveUnit[
     validateArchiveUnit(unit, schema, units, unitIdsBySchema.get(unit.schemaId));
   }
 
+  const referenceCodeOwners = new Map<string, string>();
+  for (const unit of units) {
+    const raw = unit.values.reference_code;
+    const referenceCodes = Array.isArray(raw) ? raw : [raw];
+    for (const referenceCode of referenceCodes) {
+      if (typeof referenceCode !== "string" || !referenceCode) continue;
+      const owner = referenceCodeOwners.get(referenceCode);
+      if (owner && owner !== unit.id) throw new Error("Archival reference codes must be unique across distinct records.");
+      referenceCodeOwners.set(referenceCode, unit.id);
+    }
+  }
+
   const depths = new Map<string, number>();
   for (const start of units) {
     if (depths.has(start.id)) continue;
@@ -372,7 +392,7 @@ export function formatArchive(schema: ArchiveSchema, units: ArchiveUnit[], forma
 }
 
 export async function reviewArchiveImport(file: File): Promise<ArchiveImportReview> {
-  const base: ArchiveImportReview = { filename: file.name.normalize("NFC").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 180) || "unnamed", digest: "", format: "unknown", schema: null, units: [], blocked: true, summary: "Import rejected." };
+  const base: ArchiveImportReview = { filename: file.name.normalize("NFC").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 180) || "unnamed", bytes: file.size, digest: "", format: "unknown", schema: null, units: [], blocked: true, summary: "Import rejected." };
   if (!file.size || file.size > MAX_FILE_BYTES) return { ...base, summary: "File must contain 1 byte–5 MiB." };
   const lower = file.name.toLowerCase();
   const extension = lower.endsWith(".json") ? "json" : lower.endsWith(".csv") ? "csv" : /\.(?:xml|ead)$/.test(lower) ? "xml" : "";
@@ -387,10 +407,7 @@ export async function reviewArchiveImport(file: File): Promise<ArchiveImportRevi
     cleanFileText(text);
 
     if (extension === "json") {
-      const parsed: unknown = JSON.parse(text, (key, value) => {
-        if (FORBIDDEN_KEYS.has(key)) throw new Error("Schema package contains a forbidden key.");
-        return value;
-      });
+      const parsed = assertSafeJsonText(text);
       inspectUntrusted(parsed, 0);
       const root = objectValue(parsed, "Schema package must be an object.");
       exactKeys(root, ["schema", "version", "exportedAt", "definition", "records"]);
@@ -400,12 +417,12 @@ export async function reviewArchiveImport(file: File): Promise<ArchiveImportRevi
       if (!Array.isArray(root.records) || root.records.length > MAX_UNITS) throw new Error("Schema package record limit exceeded.");
       const units = root.records.map((record) => parseUnitDto(record));
       validateArchiveSet([schema], units);
-      return { ...base, format: "schema-package", schema, units, blocked: false, summary: `${units.length} archival records ready to apply.` };
+      return bindArchiveImportReview({ ...base, format: "schema-package", schema, units, blocked: false, summary: `${units.length} archival records ready to apply.` });
     }
     if (extension === "csv") {
       const result = archiveCsvImport(text, base.digest);
       validateArchiveSet([result.schema], result.units);
-      return { ...base, format: result.schema.profile === "atom" ? "atom-csv" : "archives-space-csv", ...result, blocked: false, summary: `${result.units.length} archival records ready to apply.` };
+      return bindArchiveImportReview({ ...base, format: result.schema.profile === "atom" ? "atom-csv" : "archives-space-csv", ...result, blocked: false, summary: `${result.units.length} archival records ready to apply.` });
     }
 
     assertSafeXmlText(text);
@@ -420,11 +437,36 @@ export async function reviewArchiveImport(file: File): Promise<ArchiveImportRevi
     const result = eadImport(document, base.digest);
     validateArchiveSet([result.schema], result.units);
     if (!result.units.length) throw new Error("EAD contains no importable descriptions.");
-    return { ...base, format: result.schema.profile, ...result, blocked: false, summary: `${result.units.length} archival records ready to apply.` };
+    return bindArchiveImportReview({ ...base, format: result.schema.profile, ...result, blocked: false, summary: `${result.units.length} archival records ready to apply.` });
   } catch (error) {
     const message = error instanceof Error ? error.message.replace(/[<>]/g, "") : "The archival file could not be parsed.";
     return { ...base, summary: message.slice(0, 500) };
   }
+}
+
+export async function verifyArchiveImportReviewBinding(review: ArchiveImportReview): Promise<boolean> {
+  const expected = archiveImportReviewBindings.get(review);
+  return Boolean(expected)
+    && review.blocked === false
+    && review.schema !== null
+    && expected === await archiveImportReviewBinding(review);
+}
+
+async function bindArchiveImportReview(review: ArchiveImportReview): Promise<ArchiveImportReview> {
+  archiveImportReviewBindings.set(review, await archiveImportReviewBinding(review));
+  return review;
+}
+
+function archiveImportReviewBinding(review: ArchiveImportReview): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    filename: review.filename,
+    bytes: review.bytes,
+    digest: review.digest,
+    format: review.format,
+    schema: review.schema,
+    units: review.units,
+  }));
+  return hash(bytes.buffer);
 }
 
 export function archiveFilename(schema: ArchiveSchema, format: ArchiveExchangeFormat): string {
@@ -770,8 +812,7 @@ function assertSupportedEadStructure(document: Document, profile: ArchiveProfile
   const descriptionName = profile === "ead4" ? "archDesc" : "archdesc";
   const descriptions = direct(root, descriptionName);
   if (descriptions.length !== 1) throw new Error("EAD has no description or contains multiple direct archival descriptions; exactly one is required.");
-  const expectedControl = profile === "ead2002" ? "eadheader" : "control";
-  if (direct(root, expectedControl).length > 1) throw new Error(`EAD may contain no more than one ${expectedControl}.`);
+  eadDocumentIdentity(root, profile);
   const validateDescription = (node: Element): void => {
     const identificationName = profile === "ead4" ? "identificationData" : "did";
     const identification = direct(node, identificationName);
@@ -780,6 +821,28 @@ function assertSupportedEadStructure(document: Document, profile: ArchiveProfile
     const referenceName = profile === "ead4" ? "unitId" : "unitid";
     if (direct(identification[0], titleName).length !== 1) throw new Error("Every EAD description requires exactly one title.");
     if (direct(identification[0], referenceName).length > 1) throw new Error("An EAD description may contain no more than one reference code.");
+    const repositories = profile === "ead4"
+      ? direct(identification[0], "otherIdentificationData").filter((item) => item.getAttribute("localType") === "in-keeping:repository")
+      : direct(identification[0], "repository");
+    if (repositories.length > 1) throw new Error("The supported EAD profile permits no more than one repository identity per description.");
+    if (repositories.length === 1) {
+      const repository = repositories[0];
+      if (profile === "ead4") {
+        assertIdentityText(textOf(repository), "EAD repository identity");
+      } else {
+        const nameCarriers = childElements(repository).filter((child) => child.namespaceURI === repository.namespaceURI && ["corpname", "name"].includes(child.localName));
+        if (nameCarriers.length !== 1 || childElements(repository).length !== 1) {
+          throw new Error("A legacy EAD repository identity requires exactly one direct name or corpname element.");
+        }
+        if (profile === "ead3") {
+          const parts = direct(nameCarriers[0], "part");
+          if (!parts.length) throw new Error("An EAD3 repository name requires one or more nonempty part elements.");
+          parts.forEach((part) => assertIdentityText(textOf(part), "EAD3 repository name part"));
+        } else {
+          assertIdentityText(textOf(nameCarriers[0]), "EAD 2002 repository identity");
+        }
+      }
+    }
     const singleSections = profile === "ead4" ? ["scopeContent", "arrangement", "accessConditions", "useConditions", "agents", "formsAvailable", "subjectHeadings", "descriptionOfComponents"] : ["scopecontent", "arrangement", "accessrestrict", "userestrict", "controlaccess", "dsc"];
     for (const section of singleSections) if (direct(node, section).length > 1) throw new Error(`An EAD description may contain no more than one ${section}.`);
     const repeatGroups = profile === "ead4"
@@ -801,6 +864,44 @@ function assertSupportedEadStructure(document: Document, profile: ArchiveProfile
   validateDescription(descriptions[0]);
 }
 
+function eadDocumentIdentity(root: Element, profile: ArchiveProfile): string {
+  const controlName = profile === "ead2002" ? "eadheader" : "control";
+  const controls = direct(root, controlName);
+  if (controls.length > 1) throw new Error(`EAD may contain no more than one ${controlName}.`);
+  if (!controls.length) return "";
+
+  const control = controls[0];
+  const identityName = profile === "ead4" ? "recordId" : profile === "ead3" ? "recordid" : "eadid";
+  const identities = direct(control, identityName);
+  if (identities.length !== 1) throw new Error(`An EAD ${controlName} requires exactly one ${identityName} document identity.`);
+  const identity = textOf(identities[0]);
+  assertIdentityText(identity, `EAD document identity ${identityName}`);
+  if (!safeId(identity)) throw new Error(`EAD document identity ${identityName} must use the supported safe local identifier syntax.`);
+
+  if (profile === "ead4") {
+    const agencies = direct(control, "maintenanceAgency");
+    if (agencies.length > 1) throw new Error("EAD4 control permits no more than one maintenanceAgency identity.");
+    if (agencies.length === 1) {
+      const codes = direct(agencies[0], "agencyCode");
+      const names = direct(agencies[0], "agencyName");
+      if (codes.length > 1 || names.length > 1) throw new Error("EAD4 maintenanceAgency permits at most one agencyCode and one agencyName.");
+      if (!codes.length && !names.length) throw new Error("EAD4 maintenanceAgency requires a nonempty agencyCode or agencyName.");
+      codes.forEach((item) => assertIdentityText(textOf(item), "EAD4 maintenanceAgency agencyCode"));
+      names.forEach((item) => assertIdentityText(textOf(item), "EAD4 maintenanceAgency agencyName"));
+    }
+  } else if (profile === "ead3") {
+    const agencies = direct(control, "maintenanceagency");
+    if (agencies.length > 1) throw new Error("EAD3 control permits no more than one maintenanceagency identity.");
+    if (agencies.length === 1) {
+      const names = direct(agencies[0], "agencyname");
+      if (names.length !== 1) throw new Error("EAD3 maintenanceagency requires exactly one nonempty agencyname.");
+      assertIdentityText(textOf(names[0]), "EAD3 maintenanceagency agencyname");
+    }
+  }
+
+  return identity;
+}
+
 function isLegacyComponentName(name: string): boolean { return /^c(?:\d{2})?$/.test(name); }
 
 function eadImport(document: Document, digest: string): { schema: ArchiveSchema; units: ArchiveUnit[] } {
@@ -808,8 +909,9 @@ function eadImport(document: Document, digest: string): { schema: ArchiveSchema;
   const profile: ArchiveProfile = namespace === EAD4_NS ? "ead4" : namespace === EAD3_NS ? "ead3" : namespace === EAD2002_NS ? "ead2002" : (() => { throw new Error("EAD namespace is unsupported."); })();
   const archDesc = direct(document.documentElement, profile === "ead4" ? "archDesc" : "archdesc")[0];
   if (!archDesc) throw new Error("EAD has no archival description.");
+  const documentIdentity = eadDocumentIdentity(document.documentElement, profile);
   const rootTitle = unitText(archDesc, profile, "title") || headerTitle(document.documentElement, profile) || "Imported EAD description";
-  const schema = makeArchiveSchema(profile, rootTitle, `SCHEMA-${profile.toUpperCase()}-${digest.slice(0, 10)}`);
+  const schema = makeArchiveSchema(profile, rootTitle, documentIdentity || `SCHEMA-${profile.toUpperCase()}-${digest.slice(0, 10)}`);
   const units: ArchiveUnit[] = [];
   const ids = new Set<string>();
   const now = new Date().toISOString();
@@ -994,7 +1096,9 @@ function unitText(node: Element, profile: ArchiveProfile, kind: "reference" | "t
       ? direct(identification, "otherIdentificationData").find((item) => item.getAttribute("localType") === "in-keeping:repository")
       : direct(identification, "repository")[0];
     if (!repository) return "";
-    return profile === "ead4" ? textOf(repository) : textOf(childElements(repository)[0]);
+    if (profile === "ead4") return textOf(repository);
+    const nameCarrier = childElements(repository)[0];
+    return profile === "ead3" ? direct(nameCarrier, "part").map(textOf).join(" ") : textOf(nameCarrier);
   }
   return textOf(direct(identification, profile === "ead4" ? (kind === "reference" ? "unitId" : "unitTitle") : (kind === "reference" ? "unitid" : "unittitle"))[0]);
 }

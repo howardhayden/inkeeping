@@ -128,20 +128,32 @@ Imports are untrusted until explicit apply. Implemented controls include:
 - explicit RIS and MARC mnemonic line grammar with no ignored malformed lines;
 - bounded BibTeX parsing with nested-brace support and rejection of directives, macros, and concatenation;
 - public, credential-free HTTPS syntax validation without making a request;
-- formula-leading cell neutralization for spreadsheet-oriented output; and
-- nonmutating review followed by apply-time source, shape, findings, destination, hierarchy, and complete-set revalidation.
+- formula-leading cell neutralization for spreadsheet-oriented output;
+- nonmutating review followed by an exact unchanged in-memory review binding and apply-time source, shape, findings, destination, hierarchy, and complete-set revalidation;
+- rejection of unsafe supplied catalog primary IDs, source-digest/ordinal derivation only when an ID is absent, normalized supported DOI duplicate comparison, and unique archival reference codes across distinct records; and
+- the same exact unchanged review-object boundary before a reviewed workspace backup may open.
 
-The governing decision is [ADR 0004](../decisions/0004-fail-closed-import-quarantine.md). Principal code is in [`app/lab-core.ts`](../../app/lab-core.ts), [`app/xml-safety.ts`](../../app/xml-safety.ts), [`app/archival-schemas.ts`](../../app/archival-schemas.ts), and [`app/public-url.ts`](../../app/public-url.ts). Automated cases are enumerated in [Testing](../TESTING.md); an execution claim must be tied to the exact candidate through [Validation report](../VALIDATION_REPORT.md).
+The governing decision is [ADR 0004](../decisions/0004-fail-closed-import-quarantine.md). Principal code is in [`app/lab-core.ts`](../../app/lab-core.ts), [`app/xml-safety.ts`](../../app/xml-safety.ts), [`app/archival-schemas.ts`](../../app/archival-schemas.ts), [`app/workspace-backups.ts`](../../app/workspace-backups.ts), and [`app/public-url.ts`](../../app/public-url.ts). Automated cases are enumerated in [Testing](../TESTING.md). An execution claim must be tied to the exact candidate through a new candidate-specific record; the [Validation report](../VALIDATION_REPORT.md) is historical precedent only.
 
 ### Local persistence and recovery
 
-Explicitly named workspaces use IndexedDB manifests plus an active and prior immutable generation. A manifest binds the digest of each retained generation. Active bytes that disagree with the manifest stop open rather than silently falling back. A verified bound prior generation opens as an unsaved recovery copy. Invalid manifests and orphan generations remain quarantined; a selected candidate is reverified and reconstructed under a new UUID and name, leaving source bytes unchanged.
+Explicitly named workspaces use IndexedDB manifests plus an active and prior immutable generation. A manifest binds the digest of each retained generation. Active bytes that disagree with the manifest stop open rather than silently falling back. Before normal rotation, the application re-reads and fully validates the active generation and any prior generation it would delete, then rechecks the optimistic token in the write transaction. Recovery save requires an unavailable active generation and input exactly matching the verified bound fallback; it rejects healthy-active substitution, unbound or changed fallback input, unsafe generation increment, and valid-shaped manifest metadata that disagrees with active content. A bound prior generation that passes internal validation may open as an unsaved recovery copy. Invalid manifests and orphan generations remain quarantined; a selected candidate is revalidated and reconstructed under a new UUID and name, leaving source bytes unchanged.
 
 This is bounded operational recovery, not backup, preservation, authentication, or evidence custody. The design is in [ADR 0003](../decisions/0003-manifest-bound-two-generation-storage.md), implementation in [`app/lab-storage.ts`](../../app/lab-storage.ts), and fault-injection evidence in [`tests/lab-storage.test.mjs`](../../tests/lab-storage.test.mjs).
 
 ### Audit limits
 
 Revision, state, payload, and linked-event digests can detect defined internal mismatches. They do not prove identity, authorization, authorship, intent, source custody, trusted time, completeness after a valid tail truncation, or nonrepudiation. A person with write access can construct a new internally consistent chain. If signed or externally anchored evidence is required, it must be provided by an approved external records/signature process.
+
+### Incident and outward-output safeguards
+
+Resolving an incident requires an assigned owner role and a contemporaneous closure note in the same state update. Incident tickets, vendor escalations, and postmortems require the operator to select one explicit incident; a resolved incident without an assigned owner, closure note, or closure criterion is blocked from truthful operational/public output. These checks prevent silent target choice and unsupported closure presentation, but they do not establish that the local fields are truthful, complete, authorized, or present in the institution's authoritative incident system.
+
+A shared UI gate blocks ordinary whole-catalog, per-record catalog, archive, service, operational, and public outputs while full snapshot validation is incomplete or failed; the session is unnamed, dirty, drafted, busy, known stale, or quarantined; sample content or error/warning findings remain; active operator-admitted-unverified evidence or unattributed catalog/archive/service content exists; or the exact named generation has not been corroborated against an independently supplied current receipt. Informational notices remain visible without permanently disabling export. Whole-catalog output additionally requires at least one record, matching the documented import contract, so a blank workspace cannot emit a successful-looking self-incompatible package.
+
+The render-time gate is not treated as freshness proof. Each authoritative action reopens and validates the named saved generation, rejects fallback recovery, compares its identity, optimistic token, state digest, terminal audit hash, and active revision with the current session, and applies continuity and evidence-authority gates to the reopened snapshot. It constructs the artifact from that exact reopened snapshot rather than the React closure, then reopens and fingerprints the saved generation—including continuity and evidence status—again after construction and before synchronous Blob/anchor activation. A delayed or unavailable cross-tab notification therefore does not authorize a stale artifact. The Technical Report remains available as a diagnostic rendering of the open session and labels its saved-copy and continuity relationship; a plaintext current-session conflict-recovery backup remains available through its separate explicit workflow.
+
+This is a bounded time-of-check control, not an atomic publication transaction. Another browser context can commit immediately after the final read, and the browser or operating system may block or fail the subsequent new-tab/download activation. The control establishes correspondence to one exact saved generation at the check instants, not that a file remains latest when later opened, transferred, approved, or published. Browser task testing, actual file confirmation, destination review, and institutional approval remain required.
 
 ### Static-host and supply-chain boundary
 
@@ -153,9 +165,9 @@ These repository controls do not establish the configuration of GitHub organizat
 
 The application's default architecture minimizes transmission: records remain in memory or operator-initiated local storage/files. That does not make the workspace anonymous or suitable for unrestricted data. Browser extensions, endpoint management, crash capture, swap, screenshots, local backups, synchronization folders, downloaded-file destinations, and platform HTTP metadata remain outside application enforcement.
 
-The Public Notice is constructed from a new allowlisted projection of nonsynthetic open-incident service categories. It does not receive workspace name, raw incident evidence/notes, catalog/archive/service records, configuration, hashes, or staff-role values; open Sample data incidents block generation. This minimizes technical exposure but does not authorize publication. Each notice requires communications, privacy, accessibility, and service-owner review.
+The Public Notice is constructed from an allowlisted projection of nonsynthetic open-incident service categories from the exact reopened authoritative saved snapshot. It does not receive workspace name, raw incident evidence/notes, catalog/archive/service records, configuration, hashes, or staff-role values. Any synthetic record or incident blocks generation regardless of incident state; unsupported resolved-incident closure, invalid or unchecked state, metadata findings, stale, dirty, drafted, busy, unnamed, recovery, quarantine, active admitted/unattributed content, or anything short of exact current receipt corroboration also blocks the UI action. This minimizes technical exposure but does not authorize publication or prove later currency. Each notice requires communications, privacy, accessibility, and service-owner review.
 
-The Technical Report is a complete staff record and may contain the most sensitive value represented in the workspace. Its static, script-free form does not lower that classification.
+The Technical Report is a bounded diagnostic rendering of the active content present in the open local session and may contain the most sensitive represented value. Live inspection labels whether that session matches, is stale relative to, has unsaved changes beyond, or is unattached to a named saved copy, and reports continuity status without upgrading it to authenticity. It is not proof that the workspace or institution's evidence is complete, authentic, current at later use, or authoritative. Its static, script-free form does not lower that classification.
 
 ## Accessibility and usability assessment
 
@@ -182,7 +194,7 @@ The repository distinguishes four classes:
 - **Manual:** a human task, browser, visual, accessibility, or workflow review is required.
 - **External:** evidence belongs to an institutional account, policy, vendor, live host, or approval system.
 
-The detailed mapping is [Review evidence matrix](REVIEW_EVIDENCE_MATRIX.md). [Validation report](../VALIDATION_REPORT.md) records a complete working-tree release-gate pass—including fresh builds, 139 tests, dependency audit, artifact validation, and strict Wrangler dry run—against a specified modified working tree. Changes after that evidence time invalidate affected results. A formal review packet must substitute an immutable commit and attach CI, live-host, accessibility, interoperability, recovery, and governance records.
+The detailed mapping is [Review evidence matrix](REVIEW_EVIDENCE_MATRIX.md). Historical report `VR-2026-08-21-04` in [Validation report](../VALIDATION_REPORT.md) records a complete release-gate pass—including fresh builds, 139 tests, dependency audit, artifact validation, and strict Wrangler dry run—against its specified 2026-08-21 modified working tree. Its totals are immutable historical evidence, not current working-tree proof; every later change invalidates affected results. A formal review packet must supply a new result for the immutable proposed commit and attach CI, live-host, accessibility, interoperability, recovery, and governance records.
 
 ## Principal residual risks
 
@@ -197,7 +209,9 @@ The governing [Risk register](../RISK_REGISTER.md) must be reviewed in full. Rev
 7. platform, repository, registrar, dependency, and build-chain compromise;
 8. capacity limits mistaken for institutional retention policy;
 9. category-level disclosure in a Public Notice without publication review; and
-10. performance at maximum supported sizes on the institution's minimum device/browser baseline.
+10. unsupported incident closure or an outward artifact detached from the current named workspace;
+11. ambiguous record identity despite local syntactic uniqueness controls; and
+12. performance at maximum supported sizes on the institution's minimum device/browser baseline.
 
 Risk acceptance must name an accountable authority, control owner, review/expiry date, and evidence location. The repository cannot accept institutional risk.
 
@@ -214,9 +228,9 @@ All of the following are release conditions, not optional recommendations:
 7. Verify live redirects, real 404 behavior, TLS, DNS/mail continuity, security/cache headers, and a browser request graph containing no workspace-data request.
 8. Complete manual keyboard, screen-reader, zoom/reflow, contrast, reduced-motion, forced-colors, and error/status testing in the supported environment matrix.
 9. Validate representative catalog, archive, spreadsheet, discovery, preservation, and office/report outputs in the institution-supported software/version/profile matrix.
-10. Rehearse named-workspace backup, destination-origin open, explicit create/save/reopen, count/digest comparison, bound-prior recovery, quarantine reconstruction, and governed source disposition using synthetic data.
+10. Rehearse named-workspace backup, exact reviewed-backup opening, destination-origin open, explicit create/save/reopen, count/digest comparison, missing/corrupt active and prior generations, bound-prior recovery, quarantine reconstruction, and governed source disposition using synthetic data.
 11. Establish a support model, security reporting route, maintenance cadence, service-level expectations, outage procedure, rollback target, and decommissioning owner.
-12. Review every Public Notice before release and classify every Technical Report, backup, and export at the highest included data level.
+12. Review every Public Notice before release; test closure, explicit-target, stale-session, sample, finding, and saved-publication gates under time pressure; and classify every Technical Report, backup, and export at the highest included data level.
 13. Record accepted residual risks and stop conditions in the institution's authoritative change/risk system.
 
 ## Maintenance and exit
