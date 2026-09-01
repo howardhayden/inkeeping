@@ -845,6 +845,56 @@ test("AtoM and ArchivesSpace own-export CSV round-trips every mapped core value 
   }
 });
 
+test("archival identity carriers reject invisible controls and technical-ID substitution", async () => {
+  const schema = makeSchema("blank", "SCHEMA-IDENTITY-SAFETY");
+  for (const referenceCode of ["MS-\u200b001", "MS-\u2060001", "MS-\u200e001", "MS-001\nFORGED"]) {
+    assert.throws(() => validateArchiveSet([schema], [makeUnit(schema, { referenceCode })]), /Unicode format|bidirectional control|line breaks/i);
+  }
+
+  const csvFixtures = [
+    ["missing-atom.csv", "legacyId,identifier,title,levelOfDescription\nROW-ATOM,,Missing source code,Collection\n"],
+    ["missing-aspace.csv", "ref_id,hierarchy,unit_id,title,level\nROW-ASPACE,1,,Missing source code,collection\n"],
+  ];
+  for (const [name, source] of csvFixtures) {
+    const review = await reviewArchiveImport(new File([source], name, { type: "text/csv" }));
+    assert.equal(review.blocked, true, `${name}: ${review.summary}`);
+    assert.match(review.summary, /source reference code|cannot substitute/i);
+    assert.equal(review.units.length, 0);
+  }
+
+  const eadProfiles = [
+    ["missing.ead4.xml", "https://standards.openpreservation.org/ead/v4", "archDesc", "identificationData", "unitTitle"],
+    ["missing.ead3.xml", "http://ead3.archivists.org/schema/", "archdesc", "did", "unittitle"],
+    ["missing.ead.xml", "urn:isbn:1-931666-22-9", "archdesc", "did", "unittitle"],
+  ];
+  for (const [name, namespace, description, did, title] of eadProfiles) {
+    const source = `<ead xmlns="${namespace}"><${description} id="TECHNICAL-ID" level="collection"><${did}><${title}>Missing descriptive identity</${title}></${did}></${description}></ead>`;
+    const review = await reviewArchiveImport(new File([source], name, { type: "application/xml" }));
+    assert.equal(review.blocked, true, `${name}: ${review.summary}`);
+    assert.match(review.summary, /exactly one source reference code/i);
+    assert.equal(review.units.length, 0);
+  }
+});
+
+test("EAD4 rejects competing URI carriers and agent-role rewrites", async () => {
+  const dualUri = `<ead xmlns="https://standards.openpreservation.org/ead/v4"><archDesc level="collection"><identificationData><unitId>MS-URI</unitId><unitTitle>URI carriers</unitTitle></identificationData><formsAvailable><formAvailable valueURI="https://example.org/one" href="https://example.org/two"><label>Object</label></formAvailable></formsAvailable></archDesc></ead>`;
+  const dualReview = await reviewArchiveImport(new File([dualUri], "dual-uri.ead4.xml", { type: "application/xml" }));
+  assert.equal(dualReview.blocked, true, dualReview.summary);
+  assert.match(dualReview.summary, /exactly one URI carrier/i);
+
+  for (const agent of [
+    "<agent><label>Alice</label><label>Bob</label><role>creator</role></agent>",
+    "<agent><label>Alice</label><role>creator</role><role>donor</role></agent>",
+    "<agent><label>Alice</label><role>donor</role></agent>",
+    "<agent><label>Ali\u200bce</label><role>creator</role></agent>",
+  ]) {
+    const source = `<ead xmlns="https://standards.openpreservation.org/ead/v4"><archDesc level="collection"><identificationData><unitId>MS-AGENT</unitId><unitTitle>Agent identity</unitTitle></identificationData><agents>${agent}</agents></archDesc></ead>`;
+    const review = await reviewArchiveImport(new File([source], "agent.ead4.xml", { type: "application/xml" }));
+    assert.equal(review.blocked, true, review.summary);
+    assert.match(review.summary, /agent|creator role|Unicode format/i);
+  }
+});
+
 test("CSV import cannot silently discard a label-like row or coerce unknown publication states", async () => {
   const schema = makeSchema("archives-space", "SCHEMA-CSV-FAIL-CLOSED");
   const unit = makeUnit(schema);

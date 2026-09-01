@@ -1,6 +1,6 @@
 # ADR 0006: Continuity anchors and evidence boundaries
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0007](0007-signed-continuity-and-activation-fences.md)
 - **Date:** 2026-08-31
 
 ## Context

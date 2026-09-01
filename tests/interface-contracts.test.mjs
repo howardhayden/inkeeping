@@ -6,6 +6,7 @@ const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8
 const ui = await readFile(new URL("../app/continuity-lab.tsx", import.meta.url), "utf8");
 const storage = await readFile(new URL("../app/lab-storage.ts", import.meta.url), "utf8");
 const freshness = await readFile(new URL("../app/output-freshness.ts", import.meta.url), "utf8");
+const activation = await readFile(new URL("../app/browser-file-activation.ts", import.meta.url), "utf8");
 const favicon = await readFile(new URL("../public/favicon.svg", import.meta.url), "utf8");
 
 test("application shell assigns one viewport-bounded scroll owner", () => {
@@ -35,13 +36,13 @@ test("empty workbenches collapse and populated panes own bounded overflow", () =
 test("report controls open or download HTML with a safe Blob lifecycle", () => {
   assert.equal((ui.match(/>Open<span className="sr-only">/g) ?? []).length, 2);
   assert.equal((ui.match(/>Download<span className="sr-only"> (?:technical report|public notice)<\/span> HTML<\/button>/g) ?? []).length, 2);
-  assert.match(ui, /anchor\.target = "_blank"/);
-  assert.match(ui, /anchor\.download = file\.name/);
-  assert.match(ui, /anchor\.rel = "noopener noreferrer"/);
-  assert.match(ui, /anchor\.referrerPolicy = "no-referrer"/);
-  assert.match(ui, /document\.body\.append\(anchor\)/);
-  assert.match(ui, /window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 60_000\)/);
-  assert.match(ui, /anchor\.remove\(\)/);
+  assert.match(activation, /anchor\.target = "_blank"/);
+  assert.match(activation, /anchor\.download = file\.name/);
+  assert.match(activation, /anchor\.rel = "noopener noreferrer"/);
+  assert.match(activation, /anchor\.referrerPolicy = "no-referrer"/);
+  assert.match(activation, /document\.body\.append\(anchor\)/);
+  assert.match(activation, /window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 60_000\)/);
+  assert.match(activation, /anchor\?\.remove\(\)/);
   assert.doesNotMatch(ui, /lacl-(?:technical-report|public-notice)\.md/);
 });
 
@@ -166,14 +167,24 @@ test("outward artifacts share integrity, sample, and stale-session gates", () =>
   assert.match(ui, /Ordinary outward artifacts require a named, saved workspace/);
   assert.match(ui, /Save the current workspace before generating ordinary outward artifacts/);
   assert.match(ui, /verifyOutputFreshness\(workspace/);
-  assert.ok((ui.match(/verifyFreshness\("authoritative"\)/g) ?? []).length >= 5);
-  assert.match(ui, /verifyFreshness\(technical \? "diagnostic" : "authoritative"\)/);
-  assert.ok((ui.match(/await lease\.recheck\(\)/g) ?? []).length >= 6);
+  assert.ok((ui.match(/verifyFreshness\("authoritative",/g) ?? []).length >= 5);
+  assert.match(ui, /verifyFreshness\(technical \? "diagnostic" : "authoritative",/);
+  assert.doesNotMatch(ui, /lease\.recheck/);
+  assert.match(ui, /outputAttemptActive\.current = true[\s\S]+await lease\.activate\(artifact\.file, artifact\.disposition\)[\s\S]+finally[\s\S]+outputAttemptActive\.current = false/);
+  assert.match(ui, /function makeTextArtifact[\s\S]+new File\(\[text\]/);
+  assert.match(ui, /function makeHtmlArtifact[\s\S]+new File\(\[html\]/);
   assert.match(freshness, /opened\.token === context\.activeLocal\.token/);
   assert.match(freshness, /opened\.recoveredFromPrevious \|\| !sameToken \|\| !sameSessionState/);
   assert.match(freshness, /savedStateDigest === await workspaceStateDigest\(workspace\)/);
   assert.match(freshness, /current\.fingerprint !== initial\.fingerprint/);
   assert.match(freshness, /currentArtifactWorkspaceDigest !== artifactWorkspaceDigest/);
+  assert.ok((freshness.match(/currentArtifactWorkspaceDigest !== artifactWorkspaceDigest/g) ?? []).length >= 2);
+  assert.match(freshness, /externalContinuity\.status === "trusted-match"/);
+  assert.match(freshness, /externalWitnessDigest:[\s\S]+externalPolicyId:[\s\S]+externalPolicyRevision:[\s\S]+externalPolicyDigest:[\s\S]+externalTopologyStatus:/);
+  assert.match(freshness, /context\.activateWorkspace\(\{ \.\.\.initial\.activationIdentity, artifactSha256, workspace: artifactWorkspace \}, file, disposition\)/);
+  assert.match(storage, /\[MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE\], "readonly"/);
+  assert.match(storage, /actualArtifactSha256 !== identity\.artifactSha256[\s\S]+manifest\.token !== identity\.token[\s\S]+generation\.payloadDigest !== identity\.payloadDigest[\s\S]+boundedWorkspaceSerialization\(generation\.payload\) !== expectedWorkspace[\s\S]+JSON\.stringify\(anchor\) !== expectedAnchor[\s\S]+activateBrowserFile\(artifactFile, artifactDisposition\)/);
+  assert.doesNotMatch(storage, /activationAction|action:\s*\(\)\s*=>\s*void/);
   assert.match(freshness, /context\.getPendingDrafts\(\)/);
   assert.match(freshness, /context\.getOperationInProgress\(\)/);
   assert.match(freshness, /context\.getStorageVersion\(\) !== context\.expectedStorageVersion/);
@@ -186,7 +197,9 @@ test("outward artifacts share integrity, sample, and stale-session gates", () =>
   assert.match(ui, /makeOperationalDocument\(lease\.artifactWorkspace, documentKind, incidentBoundDocument \? selectedIncidentId : undefined\)/);
   assert.match(ui, /makePublicNoticeHtml\(lease\.artifactWorkspace, generatedAt\)/);
   assert.ok((ui.match(/activeRevision\(lease\.artifactWorkspace\)/g) ?? []).length >= 3);
-  assert.match(ui, /await verifyWorkspaceBackupReviewBinding\(reviewed\)/);
+  assert.match(ui, /const snapshot = await consumeWorkspaceBackupReview\(reviewed\)/);
+  assert.match(ui, /const reviewedWorkspace = snapshot\.workspace/);
+  assert.doesNotMatch(ui, /verifyWorkspaceBackupReviewBinding\(reviewed\)|reviewed\.workspace!/);
   assert.match(ui, /blockingFindings = findings\.filter\(\(finding\) => finding\.severity === "error" \|\| finding\.severity === "warning"\)/);
   assert.match(ui, /Informational duplicate notices.*do not permanently disable export/);
 });
@@ -206,11 +219,17 @@ test("evidence admission and continuity are explicit non-authority gates", () =>
   assert.match(ui, /Open workspace backup as unverified evidence/);
   assert.match(ui, /initializeLocalContinuityAnchor/);
   assert.match(ui, /continuity-not-authenticity-v1|CONTINUITY_ACKNOWLEDGMENT/);
-  assert.match(ui, /Download independent receipt/);
-  assert.match(ui, /Compare independent receipt/);
-  assert.match(ui, /Ordinary outward artifacts require this exact saved generation to be rechecked against an independently retained current receipt/);
+  assert.match(ui, /Download local comparison receipt/);
+  assert.match(ui, /Compare local receipt/);
+  assert.match(ui, /An unsigned local receipt is diagnostic only/);
+  assert.match(ui, /Download unsigned witness request/);
+  assert.match(ui, /Select signed witness set/);
+  assert.match(ui, /Select trust policy/);
+  assert.match(ui, /Expected current policy SHA-256 · separate channel/);
+  assert.match(ui, /Verify external checkpoint material/);
+  assert.match(ui, /Ordinary outward artifacts require this exact saved generation to match a signed witness chain under the exact current policy digest obtained through a separate trust channel/);
   assert.match(ui, /independentReceipt: serialized/);
-  assert.match(ui, /openLocalWorkspace\(id, activeLocal\?\.independentReceipt \?\? null\)/);
+  assert.match(ui, /openLocalWorkspace\(id, activeLocal\?\.independentReceipt \?\? null, activeLocal\?\.externalProof \?\? null\)/);
   assert.match(ui, /Ordinary outward artifacts are blocked by active unverified or unattributed content/i);
   assert.ok(
     ui.indexOf('if (disposition.decision !== "admit-unverified")')

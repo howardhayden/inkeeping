@@ -4,6 +4,7 @@ import { REPORT_JOST_FONTS } from "./report-fonts.ts";
 import { DATA_FORMAT_RULES, RECORD_FORMATS } from "./record-formats.ts";
 import { SERVICE_AREAS, SERVICE_DATA_FORMAT_RULES, SERVICE_RECORD_DEFINITIONS, serviceDefinition, type ServiceArea, type ServiceRecord, type ServiceValue } from "./service-register.ts";
 import type { ContinuityStatus } from "./continuity-anchor.ts";
+import type { ExternalContinuityVerification } from "./external-continuity.ts";
 
 export const TECHNICAL_REPORT_FILENAME = "in-keeping-technical-report.html";
 export const PUBLIC_NOTICE_FILENAME = "in-keeping-public-notice.html";
@@ -17,6 +18,7 @@ export type TechnicalReportContext = {
   savedCopyStatus?: "current" | "stale" | "unsaved-changes" | "not-saved";
   continuityStatus?: ContinuityStatus;
   continuityReason?: string;
+  externalContinuity?: ExternalContinuityVerification;
 };
 
 const PUBLIC_SERVICE_COPY = {
@@ -71,6 +73,8 @@ export async function makeTechnicalReportHtml(
   const savedCopyStatus = context.savedCopyStatus ?? "not-saved";
   const continuityStatus = context.continuityStatus ?? "unanchored";
   const continuityReason = context.continuityReason ?? "No separately retained continuity checkpoint was supplied to this generator.";
+  const externalContinuity = context.externalContinuity ?? { status: "policy-pin-missing" as const, reason: "No signed witness set and exact separately obtained policy digest were supplied to this generator.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
+  const externalFailure = ["rollback", "fork", "gap", "revoked-key", "unknown-key", "invalid-signature", "invalid-evidence", "policy-pin-mismatch", "content-mismatch"].includes(externalContinuity.status);
   const evidenceAuthority = workspace.evidenceAuthority ?? [];
   const evidenceApplications = workspace.evidenceApplications ?? [];
   const applicationByDecision = new Map(evidenceApplications.map((record) => [record.decisionRecordSha256, record]));
@@ -85,8 +89,9 @@ export async function makeTechnicalReportHtml(
     || sampleContaminated
     || savedCopyStatus === "stale"
     || continuityStatus === "continuity-failure"
+    || externalFailure
     ? "Action required"
-    : auditState !== "valid" || findings.length || openIncidents.length || reviewServices.length > 0 || savedCopyStatus !== "current" || continuityStatus !== "continuity-corroborated" || activeEvidence.blocked
+    : auditState !== "valid" || findings.length || openIncidents.length || reviewServices.length > 0 || savedCopyStatus !== "current" || externalContinuity.status !== "trusted-match" || activeEvidence.blocked
       ? "Review required"
       : "No active exceptions recorded in this workspace";
   const auditLabel = auditState === "valid"
@@ -105,14 +110,16 @@ export async function makeTechnicalReportHtml(
     definition("Report generated — browser clock", displayTime(timestamp), timestamp),
     definition("Audit chain", auditLabel),
     definition("Named saved copy", savedCopyStatus === "current" ? "Caller or interface reports that this session matches a named saved version; this generator did not independently verify browser-storage freshness" : savedCopyStatus === "stale" ? "Named saved version changed or disappeared in another tab" : savedCopyStatus === "unsaved-changes" ? "Current session contains unsaved changes" : "Current session is not attached to a named saved workspace"),
-    definition("Continuity", `${continuityStatus} — ${continuityReason}`),
+    definition("Local continuity comparison", `${continuityStatus} — ${continuityReason}`),
+    definition("External signed checkpoint", `${externalContinuity.status} — ${externalContinuity.reason}`),
     definition("Evidence dispositions", `${evidenceAuthority.length} recorded; ${evidenceApplications.filter((item) => item.outcome === "applied").length} applied and ${evidenceApplications.filter((item) => item.outcome === "not-applied").length} not applied; ${activeEvidence.activeUnverifiedDecisionDigests.length} unverified admission${activeEvidence.activeUnverifiedDecisionDigests.length === 1 ? "" : "s"} reach active content`),
     definition("Evidence scope", "This report covers only the information present in this workspace. The absence of a record is not evidence that an event, dependency, error, or unresolved condition does not exist."),
     "</dl>",
     unsupportedClosures.length ? '<p class="handling-note"><strong>Action required:</strong> Unsupported closure evidence or criteria are missing for resolved incident(s) ' + unsupportedClosures.map((incident) => html(incident.id)).join(", ") + '. Reopen each incident or record an assigned owner, a contemporaneous closure note, and a nonblank closure criterion or next action before relying on an all-clear.</p>' : "",
     sampleContaminated ? '<p class="handling-note"><strong>Sample data:</strong> This workspace contains synthetic records or incidents. Use this Technical Report only for review and testing; ordinary compatibility, operational, and public outputs must come from a blank production workspace.</p>' : "",
     savedCopyStatus === "stale" ? '<p class="handling-note"><strong>Stale session:</strong> The named saved workspace changed or disappeared in another tab. This report describes the open session, not the newer saved version. Reconcile both before reliance.</p>' : savedCopyStatus === "unsaved-changes" ? '<p class="handling-note"><strong>Unsaved session:</strong> This report includes browser-session changes that are not present in the named saved workspace.</p>' : savedCopyStatus === "not-saved" ? '<p class="handling-note"><strong>Working copy:</strong> This report was generated from a session that is not attached to a named saved workspace.</p>' : "",
-    continuityStatus === "continuity-failure" ? '<p class="handling-note"><strong>Continuity failure:</strong> The current saved state did not match its separately retained local checkpoint. Preserve both and investigate; do not re-anchor this lineage in place.</p>' : continuityStatus === "unanchored" ? '<p class="handling-note"><strong>Unanchored:</strong> Internal hashes alone do not detect a fully regenerated history. Ordinary outward artifacts require an explicitly accepted checkpoint and exact current independent receipt comparison.</p>' : continuityStatus === "continuity-verified-local" ? '<p class="handling-note"><strong>Local checkpoint only:</strong> The saved state matches its same-origin checkpoint, but ordinary outward artifacts remain blocked until an independently retained receipt for this exact generation is compared.</p>' : '<p class="handling-note"><strong>Corroborated continuity only:</strong> The exact current receipt comparison detects defined local replacement, but does not establish authenticity, identity, custody, completeness, authority, or trusted time.</p>',
+    continuityStatus === "continuity-failure" ? '<p class="handling-note"><strong>Local continuity failure:</strong> The current saved state did not match its same-origin checkpoint. Preserve both and investigate; do not re-anchor this lineage in place.</p>' : '<p class="handling-note"><strong>Local comparison only:</strong> Same-origin anchors and unsigned receipts are diagnostic. They cannot unlock ordinary output or establish authenticity, custody, completeness, authority, or trusted time.</p>',
+    externalContinuity.status === "trusted-match" ? `<p class="handling-note"><strong>Signed checkpoint correspondence:</strong> The saved checkpoint matches witness ${html(externalContinuity.witnessDigest ?? "not recorded")} under supplied policy ${html(externalContinuity.policyId ?? "not recorded")} revision ${html(String(externalContinuity.policyRevision ?? "not recorded"))}, whose canonical digest is ${html(externalContinuity.policyDigest ?? "not recorded")}. This correspondence does not establish evidence truth, completeness, custody, or that the policy pin was independently obtained or current.</p>` : `<p class="handling-note"><strong>External authority unavailable:</strong> ${html(externalContinuity.reason)} Ordinary output requires a signed witness chain and the exact current policy digest obtained through a separate trust channel; no purely browser-local state can supply that authority.</p>`,
     activeEvidence.blocked ? `<p class="handling-note"><strong>Active evidence barrier:</strong> ${html(activeEvidence.reason)} Historical decisions and non-application outcomes remain recorded; withdrawal alone cannot launder retained active content.</p>` : admittedUnverifiedEvidence.length ? '<p class="handling-note"><strong>Historical evidence decisions:</strong> Unverified admissions remain in the decision register, but none currently reach an active output entity. They remain reviewable and do not become authoritative.</p>' : "",
     '<div class="metric-grid" aria-label="Current inventory totals">',
     metric(revision.records.length, "Catalog records"),
@@ -201,7 +208,7 @@ export async function makeTechnicalReportHtml(
     ? dataTable(
         "evidence-authority-table",
         "Evidence disposition register — " + evidenceAuthority.length,
-        ["Source", "Scope", "Disposition", "Application outcome", "Claimed origin", "Actor role claim", "Policy reference", "Browser time", "Binding"],
+        ["Source", "Scope", "Disposition", "Application outcome", "Durable review warnings", "Claimed origin", "Actor role claim", "Policy reference", "Browser time", "Binding"],
         evidenceAuthority.map((record) => [
           `${record.evidence.source.kind} · ${record.evidence.source.filename} · sha256:${record.evidence.source.sha256}`,
           `${record.evidence.scope.kind} · ${record.evidence.scope.entityIds.join(", ")}`,
@@ -209,6 +216,9 @@ export async function makeTechnicalReportHtml(
           applicationByDecision.has(record.recordSha256)
             ? `${applicationByDecision.get(record.recordSha256)!.outcome} · ${applicationByDecision.get(record.recordSha256)!.reason} · ${applicationByDecision.get(record.recordSha256)!.detail}${applicationByDecision.get(record.recordSha256)!.resultingRevisionId ? ` · revision:${applicationByDecision.get(record.recordSha256)!.resultingRevisionId} · revision-state-sha256:${applicationByDecision.get(record.recordSha256)!.resultingRevisionDigest}` : ""}`
             : "legacy/unknown application outcome — treated conservatively when scoped content is active",
+          record.evidence.review.warningManifest
+            ? `${record.evidence.review.warningManifest.warnings.length} complete warning record${record.evidence.review.warningManifest.warnings.length === 1 ? "" : "s"} · ${record.evidence.review.warningManifest.recordSha256}`
+            : "legacy warning manifest absent — completeness not established",
           `${record.disposition.claimedOrigin} · ${record.disposition.custodyNote}`,
           record.disposition.actorRoleClaim,
           record.disposition.policyReference,
@@ -380,7 +390,7 @@ export async function makeTechnicalReportHtml(
         ["Stale tab overwrite", "Every manifest carries an optimistic token checked during save.", "The stale save is rejected and the user must reopen the current workspace.", "Simultaneous edits are not merged automatically."],
         ["Corrupted current generation", "The manifest binds current and prior generation digests; opening also performs strict snapshot, revision, archive, service, and audit validation.", "A manifest-bound prior generation may open only as an unsaved recovery copy. Opening never rewrites or deletes stored generations.", "One prior manifest-bound generation is retained. Failed or orphaned bytes require explicit inspection and remain browser-local until separately deleted."],
         ["Unintended disclosure", "Application code implements no analytics or background workspace upload; the public notice is a fixed one-way projection that excludes catalog, archive, service-register, configuration, and audit data.", "Workspace content stays in memory or browser storage unless the operator downloads or shares a file. The hosting provider may separately process ordinary HTTP request metadata.", "Downloaded files are plaintext and outside this application's deletion, retention, encryption, and access controls."],
-        ["Undetected state alteration", "Each current audit event links the prior hash; the latest event binds the complete non-audit workspace state with SHA-256. Named saved workspaces can add a separately retained continuity checkpoint.", "Internal mismatch or checkpoint disagreement blocks ordinary output.", "An actor controlling every browser-local store can replace both workspace and checkpoint; compare an independently held receipt. No hash proves identity, truth, authority, custody, completeness, trusted time, provenance, or nonrepudiation."],
+        ["Undetected state alteration", "Each current audit event links the prior hash; the latest event binds the complete non-audit workspace state with SHA-256. Named saved workspaces can add a local checkpoint and request an externally signed witness.", "Internal mismatch, signed-chain failure, or exact pinned-policy terminal disagreement blocks ordinary output.", "An unsigned receipt is diagnostic only. A compromised or colluding external authority can still sign fabricated evidence, and no hash or signature proves truth, completeness, custody, trusted time, signer authority, or institutional approval."],
         ["Accidental deletion", "Deletion names the target, requires confirmation, and never deletes downloaded backups.", "The selected browser-local workspace or all local workspaces are removed only after confirmation.", "Browser-local deletion has no institutional records-retention authority and cannot recall exported copies."],
       ],
     ),
@@ -393,7 +403,7 @@ export async function makeTechnicalReportHtml(
     + boundary("Accessibility", "The document uses landmarks, ordered flows, scoped table headers, explicit status text, keyboard-scrollable data regions, print rules, and 400% reflow.")
     + boundary("Interoperability", "Crosswalks preserve the local canonical model. Vendor acceptance and external schema validation remain receiving-system responsibilities.")
     + boundary("Browser-local persistence", "Named workspaces keep a current and one prior verified generation. A downloaded workspace backup is a plaintext, operator-controlled recovery copy outside browser eviction and application deletion.")
-    + boundary("Integrity limit", "The latest audit event binds the complete non-audit state and linked hashes detect internal mismatch. A separately retained local checkpoint detects a regenerated saved history while that checkpoint remains unchanged; an independently held receipt is needed to detect coherent replacement of every browser-local store. Neither proves identity, authorization, truth, custody, completeness, trusted time, provenance, or nonrepudiation.")
+    + boundary("Integrity limit", "The latest audit event binds the complete non-audit state and linked hashes detect internal mismatch. A local checkpoint detects replacement only while it remains unchanged. Ordinary output additionally requires an externally signed witness chain under the exact current policy digest entered from a separate channel; an unsigned receipt remains diagnostic. None of these establishes identity, signer authority, policy custody, authorization, truth, completeness, trusted time, provenance, or nonrepudiation.")
     + "</div>";
 
   const cells = [

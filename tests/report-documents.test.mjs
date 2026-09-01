@@ -279,10 +279,15 @@ test("clean and service-register status remains scoped to what this workspace re
   const blank = await createBlankWorkspace();
   const localOnly = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-verified-local", continuityReason: "Matching local checkpoint; authenticity is not established." });
   assert.match(localOnly, /Review required/);
-  assert.match(localOnly, /Local checkpoint only/);
+  assert.match(localOnly, /Local comparison only/);
   assert.doesNotMatch(localOnly, /No active exceptions recorded in this workspace/);
 
-  const clean = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-corroborated", continuityReason: "Exact independently retained current receipt compared." });
+  const receiptOnly = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-corroborated", continuityReason: "Exact unsigned local comparison receipt compared." });
+  assert.match(receiptOnly, /Review required/);
+  assert.match(receiptOnly, /unsigned receipts are diagnostic/i);
+  assert.doesNotMatch(receiptOnly, /No active exceptions recorded in this workspace/);
+
+  const clean = await makeTechnicalReportHtml(blank, "valid", GENERATED_AT, { savedCopyStatus: "current", continuityStatus: "continuity-corroborated", continuityReason: "Exact unsigned local comparison receipt compared.", externalContinuity: { status: "trusted-match", reason: "Exact signed checkpoint correspondence under the supplied current policy pin.", witnessDigest: "a".repeat(64), policyId: "TEST-POLICY", policyRevision: 3, policyDigest: "b".repeat(64), topology: { status: "corroborated-at-checkpoint", sequence: ["a".repeat(64)], branchHeads: ["a".repeat(64)], findings: [], terminalWitnessDigest: "a".repeat(64) } } });
   assert.match(clean, /No active exceptions recorded in this workspace/);
   assert.doesNotMatch(clean, /class="status-banner status-ok"/);
   assert.match(clean, /Caller or interface reports that this session matches a named saved version/);
@@ -318,7 +323,8 @@ test("technical reports expose unverified evidence decisions and continuity limi
   assert.match(report, /admit-unverified/);
   assert.match(report, /No independently established custody path/);
   assert.match(report, /unverified evidence/i);
-  assert.match(report, /Internal hashes alone do not detect a fully regenerated history/);
+  assert.match(report, /same-origin anchors and unsigned receipts are diagnostic/i);
+  assert.match(report, /no purely browser-local state can supply that authority/i);
   assert.doesNotMatch(report, /No active exceptions recorded in this workspace/);
   await assert.rejects(makePublicNoticeHtml(workspace, GENERATED_AT), /unverified evidence admission|unverified or unattributed/i);
 });

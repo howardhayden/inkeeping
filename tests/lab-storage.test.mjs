@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import "fake-indexeddb/auto";
 import {
+  activateAgainstLocalWorkspace,
   clearLocalWorkspaces,
   corroborateLocalContinuityReceipt,
   createLocalWorkspace,
@@ -14,12 +15,25 @@ import {
   openLocalWorkspace,
   openContinuityVerifiedWorkspace,
   makeLocalContinuityReceipt,
+  makeLocalContinuityWitness,
   reconstructLocalWorkspaceFromQuarantine,
   saveLocalWorkspace,
   saveRecoveredLocalWorkspace,
 } from "../app/lab-storage.ts";
 import { createBlankWorkspace, renameWorkspace } from "../app/lab-core.ts";
 import { CONTINUITY_ACKNOWLEDGMENT, createContinuityAnchor, parseContinuityReceipt } from "../app/continuity-anchor.ts";
+import {
+  CONTINUITY_SIGNATURE_SUITE,
+  CONTINUITY_TRUST_POLICY_SCHEMA,
+  CONTINUITY_TRUST_POLICY_VERSION,
+  CONTINUITY_WITNESS_SET_SCHEMA,
+  CONTINUITY_WITNESS_SET_VERSION,
+  SIGNED_CONTINUITY_WITNESS_SCHEMA,
+  SIGNED_CONTINUITY_WITNESS_VERSION,
+  continuityTrustPolicyDigest,
+  continuityWitnessSigningBytes,
+  parseContinuityWitness,
+} from "../app/external-continuity.ts";
 
 const DATABASE = "library-access-continuity-lab";
 const LEGACY_STORE = "workspaces";
@@ -146,6 +160,58 @@ async function sha256Hex(value) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function fileSha256(file) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function withBrowserActivation(onClick, task) {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const anchor = { href: "", rel: "", referrerPolicy: "", download: "", target: "", click: onClick, remove: () => undefined };
+  globalThis.document = { createElement: () => anchor, body: { append: () => undefined } };
+  globalThis.window = { setTimeout: (callback) => { callback(); return 0; } };
+  try {
+    return await task(anchor);
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+}
+
+async function makeExternalInput(witness) {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const unsigned = {
+    schema: SIGNED_CONTINUITY_WITNESS_SCHEMA,
+    version: SIGNED_CONTINUITY_WITNESS_VERSION,
+    witness,
+    authorityId: "authority.storage-test",
+    keyId: "checkpoint-key",
+    suite: CONTINUITY_SIGNATURE_SUITE,
+    signature: Buffer.from(new Uint8Array(64)).toString("base64url"),
+  };
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, continuityWitnessSigningBytes(unsigned));
+  const signed = { ...unsigned, signature: Buffer.from(new Uint8Array(signature)).toString("base64url") };
+  const policy = {
+    schema: CONTINUITY_TRUST_POLICY_SCHEMA,
+    version: CONTINUITY_TRUST_POLICY_VERSION,
+    policyId: "policy.storage-test",
+    authorityId: "authority.storage-test",
+    revision: 1,
+    keys: [{ keyId: "checkpoint-key", status: "active", publicJwk: { kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y } }],
+    terminals: [{ workspaceId: witness.workspaceId, lineageId: witness.lineageId, branchId: witness.branchId, originScope: witness.originScope, sequence: witness.sequence, witnessDigest: witness.digest }],
+  };
+  return {
+    signedWitnessSet: JSON.stringify({ schema: CONTINUITY_WITNESS_SET_SCHEMA, version: CONTINUITY_WITNESS_SET_VERSION, witnesses: [signed] }),
+    trustPolicy: JSON.stringify(policy),
+    expectedPolicyDigest: await continuityTrustPolicyDigest(policy),
+    originScope: witness.originScope,
+  };
+}
+
 async function corruptGeneration(id, generation) {
   await updateStore(GENERATION_STORE, [id, generation], (value) => {
     value.payload.name = "Corrupt payload";
@@ -171,17 +237,17 @@ test("legacy workspaces are claimed once and moved atomically across tabs", asyn
   assert.equal(await readStore(LEGACY_STORE, "slot-b"), undefined);
 });
 
-test("continuity baselines are explicit, advance with verified saves, and yield independently retainable receipts", async () => {
+test("continuity baselines advance with verified saves while unsigned receipts remain diagnostic", async () => {
   await clearLocalWorkspaces();
   const first = await createBlankWorkspace("Anchored continuity register");
   const created = await createLocalWorkspace(first);
   const unanchored = await openLocalWorkspace(created.id);
   assert.equal(unanchored.continuity.status, "unanchored");
-  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /continuity verification|required.*checkpoint/i);
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /local continuity checkpoint/i);
 
   const accepted = await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
   assert.equal(accepted.status, "continuity-verified-local");
-  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /independent continuity receipt corroboration/i);
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /signed witness chain.*policy digest/i);
   const firstAnchor = await readStore(CONTINUITY_STORE, created.id);
   assert.equal(firstAnchor.sequence, 1);
 
@@ -190,8 +256,9 @@ test("continuity baselines are explicit, advance with verified saves, and yield 
   assert.equal(receipt.anchorDigest, firstAnchor.digest);
   assert.equal(receipt.workspaceId, created.id);
   assert.equal((await corroborateLocalContinuityReceipt(created.id, created.token, receiptText)).status, "continuity-corroborated");
-  const anchored = await openContinuityVerifiedWorkspace(created.id, receiptText);
+  const anchored = await openLocalWorkspace(created.id, receiptText);
   assert.equal(anchored.continuity.status, "continuity-corroborated");
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id, receiptText), /signed witness chain.*policy digest/i);
 
   const nextWorkspace = await renameWorkspace(first, "Anchored continuity register revised");
   const saved = await saveLocalWorkspace(created.id, nextWorkspace, created.token);
@@ -200,11 +267,83 @@ test("continuity baselines are explicit, advance with verified saves, and yield 
   assert.equal(nextAnchor.previousAnchorDigest, firstAnchor.digest);
   assert.equal(nextAnchor.previousCheckpoint.payloadDigest, created.payloadDigest);
   assert.equal(nextAnchor.activeCheckpoint.payloadDigest, saved.payloadDigest);
-  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /independent continuity receipt corroboration/i);
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id), /signed witness chain.*policy digest/i);
   await assert.rejects(corroborateLocalContinuityReceipt(created.id, saved.token, receiptText), /did not corroborate|stale/i);
   const currentReceipt = await makeLocalContinuityReceipt(created.id, saved.token);
   assert.equal((await corroborateLocalContinuityReceipt(created.id, saved.token, currentReceipt)).status, "continuity-corroborated");
-  assert.equal((await openContinuityVerifiedWorkspace(created.id, currentReceipt)).workspace.name, "Anchored continuity register revised");
+  assert.equal((await openLocalWorkspace(created.id, currentReceipt)).workspace.name, "Anchored continuity register revised");
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id, currentReceipt), /signed witness chain.*policy digest/i);
+});
+
+test("atomic witness creation and an exact pinned signed witness unlock only its current generation", async () => {
+  await clearLocalWorkspaces();
+  const workspace = await createBlankWorkspace("Externally witnessed storage");
+  const created = await createLocalWorkspace(workspace);
+  await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
+  const witness = parseContinuityWitness(await makeLocalContinuityWitness(created.id, created.token, "https://example.test"));
+  const externalInput = await makeExternalInput(witness);
+  const opened = await openContinuityVerifiedWorkspace(created.id, null, externalInput);
+  assert.equal(opened.externalContinuity.status, "trusted-match");
+  assert.equal(opened.continuity.status, "continuity-verified-local");
+
+  const changed = await renameWorkspace(workspace, "Externally witnessed storage changed");
+  const saved = await saveLocalWorkspace(created.id, changed, created.token);
+  await assert.rejects(openContinuityVerifiedWorkspace(created.id, null, externalInput), /signed witness chain|signed terminal|checkpoint/i);
+  await assert.rejects(makeLocalContinuityWitness(created.id, created.token, "https://example.test"), /changed/i);
+  assert.ok(await makeLocalContinuityWitness(created.id, saved.token, "https://example.test"));
+});
+
+test("the final activation snapshot observes earlier writes and queues later writes until synchronous activation", async () => {
+  await clearLocalWorkspaces();
+  const workspace = await createBlankWorkspace("Activation fence storage");
+  const created = await createLocalWorkspace(workspace);
+  await initializeLocalContinuityAnchor(created.id, created.token, continuityAcceptance());
+  const witness = parseContinuityWitness(await makeLocalContinuityWitness(created.id, created.token, "https://example.test"));
+  const externalInput = await makeExternalInput(witness);
+  const opened = await openContinuityVerifiedWorkspace(created.id, null, externalInput);
+  const file = new File(["exact activation bytes"], "activation.txt", { type: "text/plain" });
+  const expectation = {
+    id: created.id,
+    token: opened.token,
+    generation: opened.openedGeneration,
+    payloadDigest: opened.manifest.payloadDigest,
+    anchorDigest: opened.continuityAnchor.digest,
+    artifactSha256: await fileSha256(file),
+    workspace: opened.workspace,
+    continuityAnchor: opened.continuityAnchor,
+  };
+
+  const otherConnection = await openDatabase();
+  const events = [];
+  let mismatchClicks = 0;
+  await withBrowserActivation(() => { mismatchClicks += 1; }, async () => {
+    await assert.rejects(
+      activateAgainstLocalWorkspace(expectation, new File(["substituted bytes"], file.name, { type: file.type }), "download"),
+      /prepared artifact bytes changed/i,
+    );
+  });
+  assert.equal(mismatchClicks, 0);
+
+  let writerDone;
+  await withBrowserActivation(() => {
+    events.push("activation");
+    const writer = otherConnection.transaction([MANIFEST_STORE], "readwrite");
+    const store = writer.objectStore(MANIFEST_STORE);
+    const request = store.get(created.id);
+    request.onsuccess = () => store.put({ ...request.result, token: crypto.randomUUID() });
+    writerDone = transactionDone(writer).then(() => { events.push("writer completed"); });
+  }, async (anchor) => {
+    await activateAgainstLocalWorkspace(expectation, file, "download");
+    assert.equal(anchor.download, file.name);
+  });
+  events.push("fence resolved");
+  await writerDone;
+  otherConnection.close();
+  assert.deepEqual(events, ["activation", "fence resolved", "writer completed"]);
+  await withBrowserActivation(() => events.push("unsafe activation"), async () => {
+    await assert.rejects(activateAgainstLocalWorkspace(expectation, file, "download"), /changed before artifact activation/i);
+  });
+  assert.equal(events.includes("unsafe activation"), false);
 });
 
 test("a wholly regenerated but internally consistent history cannot satisfy the retained local anchor", async () => {

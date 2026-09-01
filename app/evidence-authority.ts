@@ -27,6 +27,31 @@ export type EvidenceAuthorityStatus =
   | "rejected"
   | "withdrawn";
 
+export type EvidenceWarningInput = {
+  severity: "error" | "warning" | "notice";
+  code: string;
+  entityId: string | null;
+  label: string;
+  detail: string;
+  occurrenceKey: string;
+};
+
+export type EvidenceWarningRecord = EvidenceWarningInput & {
+  warningId: string;
+  recordSha256: string;
+};
+
+export type EvidenceWarningManifest = {
+  schema: "in-keeping/evidence-warning-manifest";
+  version: 1;
+  sourceSha256: string;
+  parserProfile: string;
+  rulesetSha256: string;
+  completeness: "complete";
+  warnings: EvidenceWarningRecord[];
+  recordSha256: string;
+};
+
 export type EvidenceDescriptor = {
   source: {
     kind: EvidenceSourceKind;
@@ -39,6 +64,7 @@ export type EvidenceDescriptor = {
     structuralStatus: "passed";
     canonicalPayloadSha256: string;
     parserProfile: string;
+    warningManifest?: EvidenceWarningManifest;
   };
   scope: {
     kind: EvidenceScopeKind;
@@ -153,6 +179,96 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DISALLOWED_TEXT = /[\u0000-\u001f\u007f]/;
 const MAX_SCOPE_ENTITIES = 5_000;
+export const MAX_EVIDENCE_WARNINGS = 1_000;
+const WARNING_SEVERITIES = new Set(["error", "warning", "notice"]);
+const EVIDENCE_WARNING_SCHEMA = "in-keeping/evidence-warning-manifest";
+const EVIDENCE_WARNING_VERSION = 1;
+
+export async function createEvidenceWarningManifest(
+  sourceSha256Value: unknown,
+  parserProfileValue: unknown,
+  warningValues: readonly unknown[],
+): Promise<EvidenceWarningManifest> {
+  const sourceSha256 = exactSha256(sourceSha256Value, "Warning source SHA-256");
+  const parserProfile = exactText(parserProfileValue, 160, "Warning parser profile");
+  if (!Array.isArray(warningValues) || warningValues.length > MAX_EVIDENCE_WARNINGS) throw new Error(`Evidence warnings exceed ${MAX_EVIDENCE_WARNINGS.toLocaleString("en-US")} entries.`);
+  const inputs = warningValues.map(validateEvidenceWarningInput);
+  if (new Set(inputs.map((item) => item.occurrenceKey)).size !== inputs.length) throw new Error("Evidence warning occurrence keys must be unique.");
+  const warnings = await Promise.all(inputs.map(async (input) => {
+    const warningId = `WRN-${await canonicalDigest({ sourceSha256, parserProfile, code: input.code, entityId: input.entityId, occurrenceKey: input.occurrenceKey, detail: input.detail })}`;
+    const unsigned = { warningId, ...input };
+    return { ...unsigned, recordSha256: await canonicalDigest(unsigned) } satisfies EvidenceWarningRecord;
+  }));
+  warnings.sort((left, right) => left.warningId.localeCompare(right.warningId));
+  const rulesetSha256 = await canonicalDigest({ profile: "in-keeping/evidence-warning-rules-v1", parserProfile });
+  const unsigned: Omit<EvidenceWarningManifest, "recordSha256"> = {
+    schema: EVIDENCE_WARNING_SCHEMA,
+    version: EVIDENCE_WARNING_VERSION,
+    sourceSha256,
+    parserProfile,
+    rulesetSha256,
+    completeness: "complete" as const,
+    warnings,
+  };
+  return { ...unsigned, recordSha256: await canonicalDigest(unsigned) };
+}
+
+export async function validateEvidenceWarningManifest(value: unknown): Promise<EvidenceWarningManifest> {
+  const manifest = readEvidenceWarningManifest(value);
+  const ids = manifest.warnings.map((item) => item.warningId);
+  if (new Set(ids).size !== ids.length || ids.some((item, index) => index > 0 && ids[index - 1].localeCompare(item) >= 0)) throw new Error("Evidence warning records must be uniquely sorted by stable warning ID.");
+  for (const warning of manifest.warnings) {
+    const input = validateEvidenceWarningInput(warning);
+    const expectedId = `WRN-${await canonicalDigest({ sourceSha256: manifest.sourceSha256, parserProfile: manifest.parserProfile, code: input.code, entityId: input.entityId, occurrenceKey: input.occurrenceKey, detail: input.detail })}`;
+    if (warning.warningId !== expectedId) throw new Error("Evidence warning ID does not match its stable condition identity.");
+    const { recordSha256, ...unsigned } = warning;
+    if (recordSha256 !== await canonicalDigest(unsigned)) throw new Error("Evidence warning record digest does not match its content.");
+  }
+  const expectedRuleset = await canonicalDigest({ profile: "in-keeping/evidence-warning-rules-v1", parserProfile: manifest.parserProfile });
+  if (manifest.rulesetSha256 !== expectedRuleset) throw new Error("Evidence warning ruleset digest is unsupported.");
+  const { recordSha256, ...unsigned } = manifest;
+  if (recordSha256 !== await canonicalDigest(unsigned)) throw new Error("Evidence warning manifest digest does not match its complete warning set.");
+  return manifest;
+}
+
+function validateEvidenceWarningInput(value: unknown): EvidenceWarningInput {
+  const input = record(value, "Evidence warning must be a plain object.");
+  const allowed = ["severity", "code", "entityId", "label", "detail", "occurrenceKey"];
+  const withRecord = [...allowed, "warningId", "recordSha256"];
+  if (Object.hasOwn(input, "warningId") || Object.hasOwn(input, "recordSha256")) exactKeys(input, withRecord, "evidence warning record");
+  else exactKeys(input, allowed, "evidence warning");
+  if (typeof input.severity !== "string" || !WARNING_SEVERITIES.has(input.severity)) throw new Error("Evidence warning severity is unsupported.");
+  return {
+    severity: input.severity as EvidenceWarningInput["severity"],
+    code: exactText(input.code, 120, "Evidence warning code"),
+    entityId: input.entityId === null ? null : exactText(input.entityId, 256, "Evidence warning entity ID"),
+    label: exactText(input.label, 300, "Evidence warning label"),
+    detail: exactText(input.detail, 2_000, "Evidence warning detail"),
+    occurrenceKey: exactText(input.occurrenceKey, 256, "Evidence warning occurrence key"),
+  };
+}
+
+function readEvidenceWarningManifest(value: unknown): EvidenceWarningManifest {
+  const root = record(value, "Evidence warning manifest must be a plain object.");
+  exactKeys(root, ["schema", "version", "sourceSha256", "parserProfile", "rulesetSha256", "completeness", "warnings", "recordSha256"], "evidence warning manifest");
+  if (root.schema !== EVIDENCE_WARNING_SCHEMA || root.version !== EVIDENCE_WARNING_VERSION || root.completeness !== "complete") throw new Error("Evidence warning manifest schema, version, or completeness is unsupported.");
+  if (!Array.isArray(root.warnings) || root.warnings.length > MAX_EVIDENCE_WARNINGS) throw new Error(`Evidence warning manifest exceeds ${MAX_EVIDENCE_WARNINGS.toLocaleString("en-US")} entries.`);
+  const warnings = root.warnings.map((item) => {
+    const raw = record(item, "Evidence warning record must be a plain object.");
+    const input = validateEvidenceWarningInput(raw);
+    return { warningId: exactSafeId(raw.warningId, "Evidence warning ID"), ...input, recordSha256: exactSha256(raw.recordSha256, "Evidence warning record SHA-256") } satisfies EvidenceWarningRecord;
+  });
+  return {
+    schema: EVIDENCE_WARNING_SCHEMA,
+    version: EVIDENCE_WARNING_VERSION,
+    sourceSha256: exactSha256(root.sourceSha256, "Warning source SHA-256"),
+    parserProfile: exactText(root.parserProfile, 160, "Warning parser profile"),
+    rulesetSha256: exactSha256(root.rulesetSha256, "Warning ruleset SHA-256"),
+    completeness: "complete",
+    warnings,
+    recordSha256: exactSha256(root.recordSha256, "Warning manifest SHA-256"),
+  };
+}
 
 /**
  * Construct a content-bound decision. There are deliberately no default
@@ -163,6 +279,7 @@ export async function createEvidenceAuthorityRecord(
   dispositionInput: unknown,
 ): Promise<EvidenceAuthorityRecord> {
   const evidence = validateEvidenceDescriptor(evidenceInput);
+  if (evidence.review.warningManifest) await validateEvidenceWarningManifest(evidence.review.warningManifest);
   const disposition = validateEvidenceDisposition(dispositionInput);
   const evidenceSha256 = await canonicalDigest(evidence);
   const unsigned = {
@@ -192,12 +309,15 @@ export function validateEvidenceDescriptor(value: unknown): EvidenceDescriptor {
   const sourceSha256 = exactSha256(source.sha256, "Evidence source SHA-256");
 
   const review = record(root.review, "Evidence review must be a plain object.");
-  exactKeys(review, ["structuralStatus", "canonicalPayloadSha256", "parserProfile"], "evidence review");
+  const hasWarningManifest = Object.hasOwn(review, "warningManifest");
+  exactKeys(review, hasWarningManifest ? ["structuralStatus", "canonicalPayloadSha256", "parserProfile", "warningManifest"] : ["structuralStatus", "canonicalPayloadSha256", "parserProfile"], "evidence review");
   if (review.structuralStatus !== "passed") {
     throw new Error("Evidence structural status must be exactly passed before a disposition can be recorded.");
   }
   const canonicalPayloadSha256 = exactSha256(review.canonicalPayloadSha256, "Canonical payload SHA-256");
   const parserProfile = exactText(review.parserProfile, 160, "Parser profile");
+  const warningManifest = hasWarningManifest ? readEvidenceWarningManifest(review.warningManifest) : undefined;
+  if (warningManifest && (warningManifest.sourceSha256 !== sourceSha256 || warningManifest.parserProfile !== parserProfile)) throw new Error("Evidence warning manifest does not bind the exact source and parser profile.");
 
   const scope = record(root.scope, "Evidence scope must be a plain object.");
   exactKeys(scope, ["kind", "entityIds"], "evidence scope");
@@ -218,7 +338,7 @@ export function validateEvidenceDescriptor(value: unknown): EvidenceDescriptor {
       bytes: source.bytes as number,
       sha256: sourceSha256,
     },
-    review: { structuralStatus: "passed", canonicalPayloadSha256, parserProfile },
+    review: { structuralStatus: "passed", canonicalPayloadSha256, parserProfile, ...(warningManifest ? { warningManifest } : {}) },
     scope: { kind: scope.kind as EvidenceScopeKind, entityIds },
   };
 }
@@ -263,6 +383,7 @@ export async function validateEvidenceAuthorityRecord(value: unknown): Promise<E
     throw new Error("Evidence authority schema or version is unsupported.");
   }
   const evidence = validateEvidenceDescriptor(root.evidence);
+  if (evidence.review.warningManifest) await validateEvidenceWarningManifest(evidence.review.warningManifest);
   const disposition = validateEvidenceDisposition(root.disposition);
   const evidenceSha256 = exactSha256(root.evidenceSha256, "Evidence binding SHA-256");
   const recordSha256 = exactSha256(root.recordSha256, "Evidence decision record SHA-256");

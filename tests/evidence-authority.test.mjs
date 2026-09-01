@@ -4,11 +4,13 @@ import {
   canonicalDigest,
   createEvidenceApplicationRecord,
   createEvidenceAuthorityRecord,
+  createEvidenceWarningManifest,
   deriveEvidenceAuthorityStatus,
   EVIDENCE_TIME_BASIS,
   validateEvidenceAuthorityRecord,
   validateEvidenceApplicationRecord,
   validateEvidenceDescriptor,
+  validateEvidenceWarningManifest,
 } from "../app/evidence-authority.ts";
 
 const sourceDigest = "a".repeat(64);
@@ -116,6 +118,28 @@ test("structurally valid, internally consistent fabricated input remains unverif
   assert.ok(!["trusted", "verified", "authoritative", "operator-admitted-verified"].includes(
     await deriveEvidenceAuthorityStatus([fabricated]),
   ));
+});
+
+test("complete review warnings have stable identities and cannot be removed or rewritten after disposition", async () => {
+  const warnings = [
+    { severity: "warning", code: "FORMAT_CONFLICT", entityId: "BIB-2", label: "Format conflict", detail: "Two carriers disagree.", occurrenceKey: "BIB-2:FORMAT_CONFLICT:1" },
+    { severity: "warning", code: "STRUCTURE_ONLY_AUTHORITY_UNVERIFIED", entityId: null, label: "Structure is not authority", detail: "Parser success does not establish truth.", occurrenceKey: "semantic-authority-boundary" },
+  ];
+  const first = await createEvidenceWarningManifest(sourceDigest, "catalog-json-v1/strict", warnings);
+  const reordered = await createEvidenceWarningManifest(sourceDigest, "catalog-json-v1/strict", [...warnings].reverse());
+  assert.deepEqual(reordered, first, "warning identity and manifest order do not depend on finding-list order");
+  assert.deepEqual(await validateEvidenceWarningManifest(first), first);
+
+  const admitted = await createEvidenceAuthorityRecord(evidence({ review: { ...evidence().review, warningManifest: first } }), disposition());
+  assert.equal(admitted.evidence.review.warningManifest.recordSha256, first.recordSha256);
+
+  const removed = structuredClone(admitted);
+  removed.evidence.review.warningManifest.warnings.pop();
+  await assert.rejects(validateEvidenceAuthorityRecord(removed), /manifest digest|binding digest/i);
+
+  const rewritten = structuredClone(admitted);
+  rewritten.evidence.review.warningManifest.warnings[0].detail = "Warning erased by rewrite.";
+  await assert.rejects(validateEvidenceAuthorityRecord(rewritten), /warning ID|record digest|manifest digest/i);
 });
 
 test("mutation of reviewed evidence or human claims invalidates its record digest", async () => {

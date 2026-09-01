@@ -12,7 +12,7 @@ Operational ownership therefore has three distinct layers:
 | --- | --- | --- |
 | GitHub and release pipeline | Repository maintainers | Source, review, checks, build artifacts, SBOM, release commit |
 | Cloudflare and DNS | Web/DNS service owner | Asset deployment, HTTP/DNS availability, certificates, ordinary platform request metadata according to account settings |
-| Browser profile and downloaded files | Operator and institutional endpoint/storage owners | In-memory work, named IndexedDB workspaces and local anchors, reports, plaintext backups, unsigned receipts |
+| Browser profile and downloaded files | Operator and institutional endpoint/storage owners | In-memory work, named IndexedDB workspaces and local anchors, durable evidence-warning manifests, reports, plaintext backups, unsigned receipts, signed witness/policy material, and recovery-transition review records |
 
 The first two layers cannot inspect or restore the third. `observability.enabled` is false in `wrangler.jsonc`, the CSP uses `connect-src 'none'`, and application code has no data-submission path. Account-level Cloudflare products and retention settings remain an infrastructure governance decision; the repository cannot configure or attest to them.
 
@@ -41,26 +41,28 @@ Assign named people or groups before production use. One person may fill multipl
 4. If the browser reports storage not persisted, follow endpoint policy before substantial work. A persistence request is only a browser request; it is not a durability guarantee.
 5. Import only through the review workflow. For catalog files, inspect the complete **Original input** and **New output** blocks. Supply an explicit admit-unverified, reject, or withdraw disposition for the unchanged review; no disposition grants authority. Archival review uses its bounded schema/record summary rather than claiming a retained per-record original source.
 6. Save deliberately at meaningful checkpoints. A working copy is not saved merely because the page remains open.
-7. Check continuity status. An unanchored workspace requires an explicit baseline acceptance before ordinary outward use; a continuity failure must be preserved and investigated, never silently re-anchored in place.
+7. Check continuity status. An unanchored workspace requires explicit local baseline acceptance. For ordinary outward use, also supply an externally signed witness chain and trust policy whose exact current SHA-256 was obtained through a separate institutional channel. An unsigned receipt remains diagnostic only. Preserve and investigate any continuity failure; never silently re-anchor the lineage in place.
 
 ### End a work session
 
 1. Resolve or record blocking findings and unsaved drafts.
 2. Explicitly save the named workspace and confirm the saved timestamp/counts update.
-3. If ordinary outward artifacts are required, retain and compare a fresh receipt for this exact generation, confirm that continuity/evidence/finding gates pass, and generate only after the two click-time saved-state checks succeed.
-4. Download the current-session backup for workspace-payload recovery. After the final anchored save, separately download the exact-state continuity receipt.
-5. Move backup and receipt to approved protected storage outside the browser-local failure/control domain; do not leave them in a general Downloads folder longer than policy allows.
-6. Close record evidence and reports before screen sharing or handing over the device.
+3. If ordinary outward artifacts are required, create the unsigned witness request for the exact generation, obtain the signed witness set and current trust policy from the external custodian, obtain the policy's exact SHA-256 through a separate approved channel, and confirm the resulting status is `trusted-match`. A locally downloaded/compared receipt cannot substitute for this step.
+4. Confirm that continuity, evidence, and finding gates pass, then generate only through the single-use click-time lease and final readonly saved-state fence.
+5. Download the current-session backup for workspace-payload recovery and, after the final anchored save, retain the exact unsigned receipt as diagnostic comparison material. Retain the signed witness set, policy, independently obtained policy digest, and custody evidence under institutional controls.
+6. Move recovery and continuity materials to approved protected storage outside the browser-local failure/control domain; do not leave them in a general Downloads folder longer than policy allows.
+7. Close record evidence and reports before screen sharing or handing over the device.
 
 ### Generate outward artifacts
 
-1. Use a named workspace whose current session is clean and non-recovery. Download/retain the exact current receipt outside the browser-local control domain and compare it so status is `continuity-corroborated`; local checkpoint equality is insufficient.
+1. Use a named workspace whose current session is clean and non-recovery. Verify its exact saved checkpoint against the externally signed witness chain, active trust-policy key and terminal, and exact current policy digest obtained through a separate institutional trust channel so external status is `trusted-match`. Local anchor equality and unsigned-receipt correspondence are insufficient.
 2. Resolve ordinary findings and active unverified/unattributed evidence. A later withdrawal retracts a claim but does not authenticate or remove retained content; removing scoped entities may end the active barrier while the historical decision remains reportable.
-3. Request the artifact. The UI reopens the exact named generation with that same receipt, checks token/state/audit/revision/anchor/evidence, renders from the reopened snapshot, and reopens/rechecks the receipt and fingerprint after construction before file activation.
-4. If any storage, freshness, continuity, or evidence check fails, preserve the diagnostic Technical Report or current-session backup as appropriate, reconcile the state, and retry. Do not bypass the gate with a low-level serializer.
-5. Confirm the browser actually created/opened the expected file, inspect its content, record the source generation/check time externally when required, and obtain destination/publication approval.
+3. Request the artifact. The UI reopens the exact named generation, checks token/state/audit/revision/anchor/evidence and signed external continuity, and renders from that saved snapshot rather than the open React closure. It verifies the artifact-snapshot digest around a second saved-state/fingerprint inspection.
+4. At final activation, the UI consumes the lease once and passes only the exact digest-bound `File` plus its open/download disposition. The storage layer rechecks the exact manifest, generation, complete workspace serialization, and complete anchor inside one readonly IndexedDB transaction. The browser activation request runs synchronously while that snapshot is held, so an earlier write is observed and a later write to those stores waits until the request returns.
+5. If any storage, freshness, continuity, signature/policy, or evidence check fails, preserve the diagnostic Technical Report or current-session backup as appropriate, reconcile the state, and retry. Do not bypass the gate with a low-level serializer.
+6. Confirm the browser or operating system actually created/opened the expected file, inspect its content, record the source generation/check time externally when required, and obtain destination/publication approval.
 
-The lease establishes correspondence at its verification instants. IndexedDB and browser file activation are not atomic; another tab can save immediately afterward. A downloaded file has no continuing freshness signal, revocation, authenticity proof, or institutional approval.
+The final fence proves only that the exact bytes were offered to the browser while the named local state was unchanged. It does not prove that the browser or operating system completed a save/open. Another tab can save after the activation request returns, and a downloaded file has no continuing freshness signal, revocation, evidence-truth proof, custody proof, or institutional approval.
 
 ### Recurring service checks
 
@@ -69,7 +71,7 @@ The lease establishes correspondence at its verification instants. IndexedDB and
 | Each release | Release gate, exact canonical metadata, header/status matrix, synthetic workflow, browser/accessibility matrix | Release record |
 | Weekly | Canonical root and 404 synthetic probes; certificate and DNS/mail status; failed Workers Builds | Operations log without record content |
 | Monthly | Cloudflare/GitHub administrators, MFA, Git integration, branch rules, platform logging/analytics settings, backup destination access | Access review |
-| Quarterly | Restore drill from an approved synthetic plaintext backup into a disposable profile; quarantine reconstruction drill | Recovery record |
+| Quarterly | Manual clean-device/new-origin drill from an approved synthetic plaintext backup into a disposable profile; retain a `source-reviewed-not-activated` transition review, then separately create and validate a new-lineage destination; quarantine reconstruction drill | External recovery record with source/destination identifiers and custody evidence |
 | At dependency PRs | Lockfile, dependency review, license/SBOM delta, tests, upstream notices | Pull request and release record |
 | At domain/account changes | Origin migration, complete DNS/mail inventory, DNSSEC, ownership and decommission plan | Approved change ticket |
 
@@ -109,12 +111,18 @@ A named workspace save validates the complete snapshot and audit ledger, applies
 
 A recovery save has stricter preconditions: before opening the write transaction it revalidates the selected manifest-bound fallback, confirms the active generation is still invalid without an active/manifest digest disagreement, and requires the submitted workspace to match that fallback byte for byte. Inside the transaction it rechecks the token and selected recovery generation. Altered recovery content must be saved under a new workspace instead of being substituted into the damaged slot.
 
-The token prevents accidental overwrite by a stale tab. The local anchor detects workspace-only regeneration while the anchor remains unchanged. Neither authenticates a person, authorizes access, proves source truth, or prevents coherent replacement of every browser-local store. An independently held exact receipt supplies only a comparison point.
+The token prevents accidental overwrite by a stale tab. The local anchor detects workspace-only regeneration while the anchor remains unchanged. Neither authenticates a person, authorizes access, proves source truth, or prevents coherent replacement of every browser-local store. An unsigned receipt supplies only a diagnostic comparison point. Ordinary output requires an externally signed witness chain under the supplied trust policy and the exact current policy digest obtained through a separate approved channel; the application cannot prove that channel's independence or the pin's currency.
 
 ### Continuity receipt residuals
 
-- **No multi-generation successor proof:** a receipt proves equality with one exact checkpoint only. A legitimate save makes the prior receipt stale, and the application does not emit a recipient-verifiable proof covering every intervening generation. Retain and compare a fresh exact receipt for each generation used for ordinary output; keep prior receipts under external records policy when the sequence itself matters.
-- **No receipt-bootstrapped clean-device restore:** a receipt contains no workspace payload and is bound to the old workspace ID/lineage. A backup omits the local anchor. On a clean device/origin, preserve both as external transition evidence, review the backup as unverified, create a new workspace, explicitly accept a new baseline, and retain/compare a new receipt. This does not cryptographically continue or authenticate the old lineage.
+- **No unsigned authority:** a receipt proves equality with one exact checkpoint only. A legitimate save makes the prior receipt stale. Retain receipts under external records policy when diagnostic comparisons or checkpoint sequence matter, but never use them to unlock ordinary output.
+- **No receipt-bootstrapped clean-device restore:** a receipt contains no workspace payload and is bound to the old workspace ID/lineage. A backup omits the local anchor. Preserve the receipt with the source materials, but it cannot authenticate the backup, continue the lineage, or replace signed external continuity evidence.
+
+### Signed external continuity residuals
+
+- **The policy cannot authorize itself:** obtain the expected current policy SHA-256 separately from the signed witness set and policy file. The browser can compare the values and validate signatures, active/revoked key status, topology, and the accepted terminal; it cannot establish independent custody or currency of the pin.
+- **Proof is process-local and checkpoint-specific:** save, rename, and reload clear the supplied proof. Obtain a witness for the exact current checkpoint and supply the materials again.
+- **Correspondence is not truth:** `trusted-match` establishes that a selected policy corroborates the exact saved checkpoint. It does not establish evidence truth/completeness, actor authority, custody, or trusted time.
 
 ### Revision and audit capacity
 
@@ -124,7 +132,7 @@ Before reaching the audit boundary, download the Technical Report and current-se
 
 ### Plaintext backup handling
 
-Current backups use the versioned `in-keeping/workspace-backup` envelope and carry `protection: plaintext-json-not-encrypted`. They contain the complete bounded workspace payload and may include restricted records, source evidence/dispositions, operational incidents, staff-entered notes, configuration, retained revisions, and audit events. They exclude IndexedDB manifests/generations/tokens, the separate local continuity anchor, and downloaded receipts. They do not prove that underlying evidence or nested claims are authentic or institutionally complete.
+Current backups use the versioned `in-keeping/workspace-backup` envelope and carry `protection: plaintext-json-not-encrypted`. They contain the complete bounded workspace payload and may include restricted records, source evidence/dispositions and their durable warning manifests, operational incidents, staff-entered notes, configuration, retained revisions, and audit events. They exclude IndexedDB manifests/generations/tokens, the separate local continuity anchor, downloaded receipts, signed witness/policy files, and separately held policy pins. They do not prove that underlying evidence or nested claims are authentic or institutionally complete.
 
 Required handling:
 
@@ -165,8 +173,9 @@ working copy still open?
 2. Read the error and preserve it without record content.
 3. Download the current-session plaintext backup.
 4. Move the file to approved protected storage.
-5. In a separate disposable profile, open the backup only with an explicit admit-unverified disposition, confirm the review, create a new named workspace, save, reopen, and compare counts. Treat it as a new unanchored lineage; preserve the old backup/receipt and explicitly accept/document a new baseline only after review.
-6. Investigate browser quota, storage policy, or stale-token conditions only after recovery is verified.
+5. Preserve any signed witness set, trust policy, separately obtained policy digest, and unsigned receipt with the source under institutional custody. A recovery-transition review may record exact source/checkpoint correspondence, but its stage remains `source-reviewed-not-activated`; it does not persist a destination, inherit continuity/authority, or prove a clean device.
+6. In a separately controlled disposable profile or clean device, manually open the backup only with an explicit admit-unverified disposition, confirm the review, create a new named workspace and lineage, save, reopen, and compare counts. Explicitly accept/document the new baseline only after review; do not claim cryptographic continuation of the old lineage.
+7. Retain the transition review and external source/destination/custody evidence, then investigate browser quota, storage policy, or stale-token conditions.
 
 Quota preflight is advisory because the browser controls allocation and eviction. A successful save does not replace institutional backup.
 
@@ -180,7 +189,7 @@ The operation stops before overwrite.
 4. Save a deliberate successor or create a separate named workspace.
 5. Do not bypass the token in IndexedDB developer tools and do not assume last-writer-wins semantics.
 
-Ordinary authoritative output also reopens storage at click time, so a delayed or missing cross-tab notification does not authorize a stale derivative. If storage changed before or during construction, activation stops. Current-session backup remains available specifically to preserve the conflicting open copy.
+Ordinary authoritative output also reopens storage at click time and performs its final exact-state checks while a readonly transaction fences the manifest, generation, and anchor stores. A delayed or missing cross-tab notification therefore does not authorize a stale derivative. A write committed earlier is observed; a later competing write waits until the synchronous browser activation request returns. The fence does not prove the operating system saved the file and does not prevent the state changing afterward. Current-session backup remains available specifically to preserve the conflicting open copy.
 
 ### C. Manifest-bound prior generation
 
@@ -221,7 +230,9 @@ Reconstruction is salvage, not proof that the original manifest was authentic or
 
 ### E. Origin cutover or host mismatch
 
-IndexedDB cannot be moved by DNS, redirects, Cloudflare rollback, or copying static assets. From the old exact origin, make a final anchored save and download both the plaintext workspace backup and matching unsigned receipt. At the new exact origin, review that exact backup, explicitly admit it only as unverified, open the unchanged review into memory, create a new named workspace, save, reopen, and compare. The old receipt cannot cryptographically continue the new workspace ID/lineage; preserve it as external transition evidence, then explicitly accept and document a new baseline. Repeat per workspace/profile. Keep the old origin until migration acceptance, then follow decommissioning.
+IndexedDB cannot be moved by DNS, redirects, Cloudflare rollback, or copying static assets. From the old exact origin, make a final anchored save and retain the plaintext workspace backup, unsigned diagnostic receipt, signed witness set, trust policy, and independently obtained policy digest under institutional custody. The recovery-transition contract can record exact source review and, when supplied, checkpoint correspondence under that policy; its stage remains `source-reviewed-not-activated`, it does not authenticate the raw backup or verify a clean device, and it always declares `new-lineage-required`.
+
+At the new exact origin, perform the actual restore manually under the approved clean-device/cutover procedure: review the exact backup, explicitly admit it only as unverified, create a new workspace ID and lineage, save, reopen, compare, and capture external source/destination/custody evidence. Then explicitly accept and document the new baseline. Do not claim that the old receipt, signed witness, or transition review transfers authority or cryptographically continues the old lineage. Repeat per workspace/profile. Keep the old origin until migration acceptance, then follow decommissioning.
 
 ### F. Browser profile loss or site-data deletion
 
@@ -257,6 +268,7 @@ Severity is adjusted for actual data classification, scale, exploitability, and 
 - Exact response headers/status and DNS answers.
 - Synthetic input that reproduces the defect.
 - Backup digest, generation digest, workspace/generation IDs, and counts when needed, without embedding record content in general tickets.
+- Recovery-transition review digest and stage, signed witness/policy identifiers and digests, the separately obtained policy pin's custody record, and old/new workspace-lineage identifiers when a recovery or cutover is involved.
 - Browser console output only after reviewing it for sensitive values.
 - Recovery actions, operator, time, and before/after identifiers.
 

@@ -40,6 +40,7 @@ import {
 } from "./lab-core";
 import {
   clearLocalWorkspaces,
+  activateAgainstLocalWorkspace,
   corroborateLocalContinuityReceipt,
   createLocalWorkspace,
   deleteLocalWorkspace,
@@ -50,30 +51,36 @@ import {
   LocalWorkspaceQuarantineError,
   openLocalWorkspace,
   makeLocalContinuityReceipt,
+  makeLocalContinuityWitness,
   reconstructLocalWorkspaceFromQuarantine,
   requestDurableStorage,
   saveLocalWorkspace,
   subscribeLocalWorkspaceChanges,
+  verifyLocalExternalContinuity,
   type LocalStorageStatus,
   type LocalWorkspaceManifest,
   type LocalWorkspaceRecoveryCandidate,
   type LocalWorkspaceStorageInspection,
   type LocalContinuityAcceptanceInput,
+  type LocalExternalContinuityInput,
 } from "./lab-storage";
 import { DATA_FORMAT_RULES, EXCHANGE_FORMATS, RECORD_FORMATS, exchangeFilename, exchangeMime, formatRecords, type ExchangeFormat } from "./record-formats";
 import { ARCHIVE_EXCHANGE_FORMATS, ARCHIVE_FIELD_KINDS, ARCHIVE_LEVELS, ARCHIVE_PROFILES, ARCHIVE_RECORD_TYPES, archiveFilename, archiveMime, formatArchive, makeArchiveSchema, normalizeArchiveEditorValues, parseOneValuePerLine, parseOneValuePerLineDraft, reviewArchiveImport, type ArchiveField, type ArchiveImportReview, type ArchiveProfile, type ArchiveRecordType, type ArchiveSchema, type ArchiveUnit, type ArchiveValue, type ArchiveExchangeFormat } from "./archival-schemas";
 import { makePublicNoticeHtml, makeTechnicalReportHtml, PUBLIC_NOTICE_FILENAME, REPORT_MIME, TECHNICAL_REPORT_FILENAME } from "./report-documents.ts";
 import { SERVICE_AREAS, SERVICE_RECORD_DEFINITIONS, formatServiceRegister, makeServiceRecord, serviceDefinition, serviceFilename, serviceMime, type ServiceArea, type ServiceFieldDefinition, type ServiceRecord, type ServiceValue } from "./service-register";
-import { makeWorkspaceBackup, reviewWorkspaceBackup, verifyWorkspaceBackupReviewBinding, workspaceBackupFilename, WORKSPACE_BACKUP_MIME, type WorkspaceBackupReview } from "./workspace-backups";
+import { consumeWorkspaceBackupReview, makeWorkspaceBackup, reviewWorkspaceBackup, workspaceBackupFilename, WORKSPACE_BACKUP_MIME, type WorkspaceBackupReview } from "./workspace-backups";
 import { pageContaining, paginate, type PageSlice } from "./list-pagination";
 import { verifyOutputFreshness, type OutputFreshnessLease, type OutputFreshnessMode } from "./output-freshness.ts";
 import { CONTINUITY_ACKNOWLEDGMENT, type ContinuityVerification } from "./continuity-anchor.ts";
-import { canonicalDigest as canonicalEvidenceDigest, EVIDENCE_TIME_BASIS } from "./evidence-authority.ts";
+import { canonicalDigest as canonicalEvidenceDigest, createEvidenceWarningManifest, EVIDENCE_TIME_BASIS } from "./evidence-authority.ts";
+import type { ExternalContinuityVerification } from "./external-continuity.ts";
+import { activateBrowserFile, type BrowserFileDisposition } from "./browser-file-activation.ts";
 
 type View = "overview" | "records" | "services" | "archives" | "incidents" | "changes" | "reports";
 type OutputGate = { blocked: boolean; reason: string };
-type ArtifactFreshnessVerifier = (mode: OutputFreshnessMode) => Promise<OutputFreshnessLease>;
-type ActiveLocalSession = { id: string; token: string; savedAt: string; continuity: ContinuityVerification; independentReceipt: string | null };
+type PreparedArtifact = { file: File; disposition: BrowserFileDisposition };
+type ArtifactDeliveryBroker = (mode: OutputFreshnessMode, prepare: (lease: OutputFreshnessLease) => Promise<PreparedArtifact> | PreparedArtifact) => Promise<void>;
+type ActiveLocalSession = { id: string; token: string; savedAt: string; continuity: ContinuityVerification; independentReceipt: string | null; externalContinuity: ExternalContinuityVerification; externalProof: LocalExternalContinuityInput | null };
 
 type DraftGuardValue = {
   register: (id: string, dirty: boolean, reset: () => void) => void;
@@ -85,12 +92,16 @@ const DraftGuardContext = createContext<DraftGuardValue>({
   confirmDiscard: () => true,
 });
 
-const ArtifactFreshnessContext = createContext<ArtifactFreshnessVerifier>(async () => {
+const ArtifactFreshnessContext = createContext<ArtifactDeliveryBroker>(async () => {
   throw new Error("Artifact freshness verification is unavailable.");
 });
 
-function useArtifactFreshness(): ArtifactFreshnessVerifier {
+function useArtifactFreshness(): ArtifactDeliveryBroker {
   return useContext(ArtifactFreshnessContext);
+}
+
+function missingExternalContinuity(reason = "No signed witness chain and separately obtained current policy digest have been verified for this saved generation."): ExternalContinuityVerification {
+  return { status: "policy-pin-missing", reason, witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
 }
 
 function useDraftRegistration(dirty: boolean, reset: () => void): string {
@@ -154,6 +165,7 @@ export function ContinuityLab() {
   const importButtonRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const operationActive = useRef(false);
+  const outputAttemptActive = useRef(false);
   const sessionVersion = useRef(0);
   const storageVersion = useRef(0);
   const storageQuarantined = useRef(false);
@@ -263,8 +275,8 @@ export function ContinuityLab() {
     ? { blocked: true, reason: "Ordinary compatibility and operational outputs are blocked because this workspace contains Sample data. Use the Technical Report or a plaintext workspace backup for review, or begin blank for production work." }
     : !activeLocal
       ? { blocked: true, reason: "Ordinary outward artifacts require a named, saved workspace so the exact saved generation can be rechecked when the file is created." }
-      : activeLocal.continuity.status !== "continuity-corroborated" || !activeLocal.independentReceipt
-        ? { blocked: true, reason: `Ordinary outward artifacts require this exact saved generation to be rechecked against an independently retained current receipt. ${activeLocal.continuity.reason}` }
+      : activeLocal.externalContinuity.status !== "trusted-match" || !activeLocal.externalProof
+        ? { blocked: true, reason: `Ordinary outward artifacts require this exact saved generation to match a signed witness chain under the exact current policy digest obtained through a separate trust channel. ${activeLocal.externalContinuity.reason}` }
       : activeEvidence?.blocked
         ? { blocked: true, reason: `Ordinary outward artifacts are blocked by active unverified or unattributed content. ${activeEvidence.reason} Use the Technical Report or workspace backup for review; no local parser or continuity checkpoint can grant this content authority.` }
       : busy
@@ -283,22 +295,31 @@ export function ContinuityLab() {
                 ? { blocked: true, reason: "Compatibility and operational outputs are blocked while error or warning metadata findings remain. Informational duplicate notices remain visible in the Technical Report but do not permanently disable export." }
                 : { blocked: false, reason: "" };
 
-  const verifyOutwardArtifact = useCallback<ArtifactFreshnessVerifier>((mode) => {
-    if (!workspace) return Promise.reject(new Error("The workspace is unavailable."));
+  const deliverOutwardArtifact = useCallback<ArtifactDeliveryBroker>(async (mode, prepare) => {
+    if (!workspace) throw new Error("The workspace is unavailable.");
+    if (outputAttemptActive.current) throw new Error("Another artifact is already being prepared.");
+    outputAttemptActive.current = true;
     const expectedSessionVersion = sessionVersion.current;
     const expectedStorageVersion = storageVersion.current;
-    return verifyOutputFreshness(workspace, {
-      activeLocal,
-      dirty,
-      expectedSessionVersion,
-      getSessionVersion: () => sessionVersion.current,
-      getPendingDrafts: () => draftEditors.current.size > 0,
-      getOperationInProgress: () => operationActive.current,
-      expectedStorageVersion,
-      getStorageVersion: () => storageVersion.current,
-      getStorageQuarantined: () => storageQuarantined.current,
-      openWorkspace: (id) => openLocalWorkspace(id, activeLocal?.independentReceipt ?? null),
-    }, mode);
+    try {
+      const lease = await verifyOutputFreshness(workspace, {
+        activeLocal,
+        dirty,
+        expectedSessionVersion,
+        getSessionVersion: () => sessionVersion.current,
+        getPendingDrafts: () => draftEditors.current.size > 0,
+        getOperationInProgress: () => operationActive.current,
+        expectedStorageVersion,
+        getStorageVersion: () => storageVersion.current,
+        getStorageQuarantined: () => storageQuarantined.current,
+        openWorkspace: (id) => openLocalWorkspace(id, activeLocal?.independentReceipt ?? null, activeLocal?.externalProof ?? null),
+        activateWorkspace: activateAgainstLocalWorkspace,
+      }, mode);
+      const artifact = await prepare(lease);
+      await lease.activate(artifact.file, artifact.disposition);
+    } finally {
+      outputAttemptActive.current = false;
+    }
   }, [activeLocal, dirty, workspace]);
 
   function changeView(next: View) {
@@ -399,7 +420,7 @@ export function ContinuityLab() {
     return runBusy(async () => {
       const next = await prepareLocalWorkspace(workspace, name);
       const manifest = await createLocalWorkspace(next);
-      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity: { status: "unanchored", reason: "Explicitly accept a local continuity baseline before ordinary outward use.", anchorDigest: null }, independentReceipt: null }, false);
+      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity: { status: "unanchored", reason: "Explicitly accept a local continuity baseline before ordinary outward use.", anchorDigest: null }, independentReceipt: null, externalContinuity: missingExternalContinuity(), externalProof: null }, false);
       await refreshLocalWorkspaces();
       setNotice(`Created and saved “${manifest.name}” in this browser.`);
     });
@@ -416,11 +437,11 @@ export function ContinuityLab() {
       const continuity = reopened.token === manifest.token
         ? reopened.continuity
         : { status: "continuity-failure" as const, reason: "The named workspace changed again immediately after this save. Reload it before continuity comparison.", anchorDigest: null };
-      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null }, false);
+      replaceSession(next, { id: manifest.id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null, externalContinuity: missingExternalContinuity(), externalProof: null }, false);
       await refreshLocalWorkspaces();
       setNotice(atCapacity
-        ? `Changes saved to “${manifest.name}”. Independent receipt corroboration was cleared. Its audit ledger is full; create a new successor workspace/lineage and explicitly accept a new baseline.`
-        : `Changes saved to “${manifest.name}”. Independent receipt corroboration was cleared; retain and compare a fresh receipt for this generation before ordinary output.`);
+        ? `Changes saved to “${manifest.name}”. Local receipt comparison and external checkpoint proof were cleared. Its audit ledger is full; create a new successor workspace/lineage and explicitly accept a new baseline.`
+        : `Changes saved to “${manifest.name}”. Local receipt comparison and external checkpoint proof were cleared; create a fresh witness and verify its signed chain under the separately obtained current policy digest before ordinary output.`);
     });
   }
 
@@ -428,8 +449,8 @@ export function ContinuityLab() {
     if (!activeLocal || !workspace || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before accepting a continuity baseline.");
     return runBusy(async () => {
       const continuity = await initializeLocalContinuityAnchor(activeLocal.id, activeLocal.token, input);
-      setActiveLocal({ ...activeLocal, continuity, independentReceipt: null });
-      setNotice("Local continuity baseline accepted and bound to this saved generation. This does not establish authenticity, identity, custody, completeness, authority, or trusted time. Download, separately retain, and compare its receipt before ordinary output.");
+      setActiveLocal({ ...activeLocal, continuity, independentReceipt: null, externalContinuity: missingExternalContinuity(), externalProof: null });
+      setNotice("Local continuity baseline accepted and bound to this saved generation. This does not establish authenticity, identity, custody, completeness, authority, or trusted time. An external custodian must sign the witness chain under a policy whose exact current digest is obtained separately before ordinary output.");
     });
   }
 
@@ -438,18 +459,37 @@ export function ContinuityLab() {
     return runBusy(async () => {
       const text = await makeLocalContinuityReceipt(activeLocal.id, activeLocal.token);
       downloadText(`${workspace?.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "workspace"}.in-keeping-continuity-receipt.json`, text, "application/json");
-      setNotice("Continuity receipt downloaded. Retain it independently and compare this exact file before ordinary output; a receipt kept only beside the workspace cannot detect coherent replacement of both.");
+      setNotice("Local comparison receipt download requested. It is unsigned diagnostic material and cannot unlock ordinary output.");
     });
   }
 
   async function compareContinuityReceipt(file: File) {
-    if (!activeLocal || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before comparing an independent receipt.");
+    if (!activeLocal || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before comparing a local diagnostic receipt.");
     return runBusy(async () => {
       if (file.size < 1 || file.size > 16 * 1024) throw new Error("Continuity receipt must be nonempty JSON no larger than 16 KiB.");
       const serialized = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
       const continuity = await corroborateLocalContinuityReceipt(activeLocal.id, activeLocal.token, serialized);
       setActiveLocal({ ...activeLocal, continuity, independentReceipt: serialized });
-      setNotice("The independently supplied receipt corroborates this exact saved checkpoint. This still does not establish authenticity, evidence truth, identity, custody, authority, completeness, or trusted time.");
+      setNotice("The supplied unsigned receipt matches this exact saved checkpoint. It remains diagnostic and cannot unlock ordinary output or establish independent custody, authenticity, evidence truth, identity, authority, completeness, or trusted time.");
+    });
+  }
+
+  async function downloadContinuityWitness() {
+    if (!activeLocal) throw new Error("Open a named saved workspace before creating a continuity witness request.");
+    return runBusy(async () => {
+      const text = await makeLocalContinuityWitness(activeLocal.id, activeLocal.token, location.origin);
+      downloadText(`${workspace?.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "workspace"}.in-keeping-continuity-witness.json`, text, "application/json");
+      setNotice("Unsigned continuity witness download requested for external signing and retention. The witness does not authorize itself.");
+    });
+  }
+
+  async function verifyExternalContinuityProof(input: LocalExternalContinuityInput) {
+    if (!activeLocal || dirty || activeLocalStale) throw new Error("Open the exact clean named saved workspace before verifying external continuity material.");
+    return runBusy(async () => {
+      const externalContinuity = await verifyLocalExternalContinuity(activeLocal.id, activeLocal.token, input);
+      if (externalContinuity.status !== "trusted-match") throw new Error(externalContinuity.reason);
+      setActiveLocal({ ...activeLocal, externalContinuity, externalProof: input });
+      setNotice("The exact saved checkpoint matches the signed witness chain under the separately entered current policy digest. This correspondence does not establish policy custody, evidence truth, completeness, authority, or trusted time.");
     });
   }
 
@@ -458,9 +498,9 @@ export function ContinuityLab() {
     return runBusy(async () => {
       const opened = await openLocalWorkspace(id);
       if (!opened.recoveredFromPrevious) {
-        replaceSession(opened.workspace, { id, token: opened.token, savedAt: opened.manifest.savedAt, continuity: opened.continuity, independentReceipt: null }, false);
+        replaceSession(opened.workspace, { id, token: opened.token, savedAt: opened.manifest.savedAt, continuity: opened.continuity, independentReceipt: null, externalContinuity: opened.externalContinuity, externalProof: null }, false);
         await refreshLocalWorkspaces();
-        setNotice(`Opened “${opened.manifest.name}”. Receipt corroboration is not restored from browser state; compare the exact current receipt before ordinary output.`);
+        setNotice(`Opened “${opened.manifest.name}”. External proof is not restored from browser state; supply the signed witness set, policy, and separately obtained current policy digest again before ordinary output.`);
         return;
       }
       replaceSession(opened.workspace, null, true);
@@ -485,10 +525,10 @@ export function ContinuityLab() {
         const continuity = reopened.token === manifest.token
           ? reopened.continuity
           : { status: "continuity-failure" as const, reason: "The named workspace changed again immediately after this rename. Reload it before continuity comparison.", anchorDigest: null };
-        replaceSession(next, { id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null }, false);
+        replaceSession(next, { id, token: manifest.token, savedAt: manifest.savedAt, continuity, independentReceipt: null, externalContinuity: missingExternalContinuity(), externalProof: null }, false);
       }
       await refreshLocalWorkspaces();
-      setNotice(`Renamed the local workspace to “${manifest.name}”. Receipt corroboration was cleared; retain and compare a fresh receipt for this generation before ordinary output.`);
+      setNotice(`Renamed the local workspace to “${manifest.name}”. External continuity proof was cleared; create and externally sign a fresh witness for this generation.`);
     });
   }
 
@@ -536,14 +576,19 @@ export function ContinuityLab() {
       setNotice("The current workspace is unavailable; review the backup again after initialization completes.");
       return false;
     }
-    if (!reviewed.workspace || reviewed.blocked || !await verifyWorkspaceBackupReviewBinding(reviewed)) {
+    const snapshot = await consumeWorkspaceBackupReview(reviewed);
+    if (!snapshot) {
       setNotice("The workspace-backup review binding is missing or changed. Review the source file again before opening it.");
       return false;
     }
+    const reviewedWorkspace = snapshot.workspace;
+    const warningManifest = await createEvidenceWarningManifest(snapshot.digest, snapshot.envelope.parserProfile, [{
+      severity: "warning", code: "STRUCTURE_ONLY_AUTHORITY_UNVERIFIED", entityId: null, label: "Backup structure is not authority", detail: "Backup validation and internal consistency do not establish origin, custody, completeness, or truth.", occurrenceKey: "semantic-authority-boundary",
+    }]);
     const evidence = {
-      source: { kind: "workspace-backup" as const, filename: reviewed.filename, format: "workspace-backup-v2", bytes: reviewed.bytes, sha256: reviewed.digest },
-      review: { structuralStatus: "passed" as const, canonicalPayloadSha256: await canonicalEvidenceDigest(reviewed.workspace), parserProfile: "workspace-backup-v2" },
-      scope: { kind: "workspace" as const, entityIds: [reviewed.workspace.activeRevisionId] },
+      source: { kind: "workspace-backup" as const, filename: snapshot.filename, format: snapshot.envelope.parserProfile, bytes: snapshot.bytes, sha256: snapshot.digest },
+      review: { structuralStatus: "passed" as const, canonicalPayloadSha256: await canonicalEvidenceDigest(reviewedWorkspace), parserProfile: snapshot.envelope.parserProfile, warningManifest },
+      scope: { kind: "workspace" as const, entityIds: [reviewedWorkspace.activeRevisionId] },
     };
     if (disposition.decision !== "admit-unverified") {
       return runBusy(async () => {
@@ -566,17 +611,17 @@ export function ContinuityLab() {
     if (!confirmDraftDiscard("Open this workspace backup? Current changes will be lost.", dirty)) return false;
     const expectedSessionVersion = sessionVersion.current;
     return runBusy(async () => {
-      if (reviewed.workspace!.audit.length >= MAX_AUDIT_EVENTS) throw new Error("The reviewed backup audit ledger is full. Preserve it for diagnosis and create an explicitly accepted successor before continuing.");
-      const next = await recordEvidenceDisposition(reviewed.workspace!, evidence, disposition, "Open workspace backup as unverified evidence", {
+      if (reviewedWorkspace.audit.length >= MAX_AUDIT_EVENTS) throw new Error("The reviewed backup audit ledger is full. Preserve it for diagnosis and create an explicitly accepted successor before continuing.");
+      const next = await recordEvidenceDisposition(reviewedWorkspace, evidence, disposition, "Open workspace backup as unverified evidence", {
         outcome: "applied",
         reason: "workspace-backup-opened",
         detail: "The reviewed backup replaced the working session as unverified evidence; it did not become authoritative.",
-        resultingRevisionId: reviewed.workspace!.activeRevisionId,
-        resultingRevisionDigest: activeRevision(reviewed.workspace!).digest,
+        resultingRevisionId: reviewedWorkspace.activeRevisionId,
+        resultingRevisionDigest: activeRevision(reviewedWorkspace).digest,
       });
       if (sessionVersion.current !== expectedSessionVersion) throw new Error("The current session changed while the backup was opening. Review the backup again before replacing it.");
       replaceSession(next, null, true);
-      setNotice(`Opened “${next.name}” as explicitly unverified evidence. Create a local workspace and separately accept a continuity baseline to retain and use it in this browser.`);
+      setNotice(`Opened “${next.name}” as explicitly unverified evidence. Create a local workspace and separately accept a continuity baseline to retain it in this browser; restored content remains diagnostic and blocked from ordinary output.`);
     });
   }
 
@@ -585,7 +630,7 @@ export function ContinuityLab() {
   }
 
   return (
-    <ArtifactFreshnessContext.Provider value={verifyOutwardArtifact}>
+    <ArtifactFreshnessContext.Provider value={deliverOutwardArtifact}>
     <DraftGuardContext.Provider value={draftGuard}>
     <div className="app-shell">
       <a className="skip-link" href="#main">Skip to main content</a>
@@ -731,6 +776,8 @@ export function ContinuityLab() {
             onAcceptContinuity={acceptContinuityBaseline}
             onDownloadContinuityReceipt={downloadContinuityReceipt}
             onCompareContinuityReceipt={compareContinuityReceipt}
+            onDownloadContinuityWitness={downloadContinuityWitness}
+            onVerifyExternalContinuity={verifyExternalContinuityProof}
             onOpen={openNamedWorkspace}
             onRename={renameNamedWorkspace}
             onDuplicate={duplicateNamedWorkspace}
@@ -845,10 +892,10 @@ function ServicesView({ records, busy, outputGate, onSave, onRemove }: { records
     setOutputError("");
     try {
       if (outputGate.blocked) throw new Error(outputGate.reason);
-      const lease = await verifyFreshness("authoritative");
-      const text = formatServiceRegister(activeRevision(lease.artifactWorkspace).serviceRecords ?? [], format);
-      await lease.recheck();
-      downloadText(serviceFilename("in-keeping", format), text, serviceMime(format));
+      await verifyFreshness("authoritative", async (lease) => {
+        const text = formatServiceRegister(activeRevision(lease.artifactWorkspace).serviceRecords ?? [], format);
+        return makeTextArtifact(serviceFilename("in-keeping", format), text, serviceMime(format));
+      });
     } catch (error) {
       setOutputError(error instanceof Error ? error.message : "The service register could not be exported safely.");
     }
@@ -1100,14 +1147,14 @@ function SchemaEditor({ schema, units, allUnits, busy, outputGate, onSave, onRem
                   setExportError("");
                   try {
                     if (outputGate.blocked) throw new Error(outputGate.reason);
-                    const lease = await verifyFreshness("authoritative");
-                    const artifactRevision = activeRevision(lease.artifactWorkspace);
-                    const artifactSchema = (artifactRevision.archiveSchemas ?? []).find((item) => item.id === schema.id);
-                    if (!artifactSchema) throw new Error("The selected archival schema is not present in the verified saved generation.");
-                    const artifactUnits = (artifactRevision.archiveUnits ?? []).filter((item) => item.schemaId === artifactSchema.id);
-                    const text = formatArchive(artifactSchema, artifactUnits, exchange);
-                    await lease.recheck();
-                    downloadText(archiveFilename(artifactSchema, exchange), text, archiveMime(exchange));
+                    await verifyFreshness("authoritative", async (lease) => {
+                      const artifactRevision = activeRevision(lease.artifactWorkspace);
+                      const artifactSchema = (artifactRevision.archiveSchemas ?? []).find((item) => item.id === schema.id);
+                      if (!artifactSchema) throw new Error("The selected archival schema is not present in the verified saved generation.");
+                      const artifactUnits = (artifactRevision.archiveUnits ?? []).filter((item) => item.schemaId === artifactSchema.id);
+                      const text = formatArchive(artifactSchema, artifactUnits, exchange);
+                      return makeTextArtifact(archiveFilename(artifactSchema, exchange), text, archiveMime(exchange));
+                    });
                   } catch (error) {
                     setExportError(error instanceof Error ? error.message : "The archive could not be exported safely.");
                   }
@@ -1330,12 +1377,12 @@ function RecordInspector({ record, findings, outputGate, onCreateIncident, onUpd
     setOutputError("");
     try {
       if (outputGate.blocked) throw new Error(outputGate.reason);
-      const lease = await verifyFreshness("authoritative");
-      const artifactRecord = activeRevision(lease.artifactWorkspace).records.find((item) => item.id === record.id);
-      if (!artifactRecord) throw new Error("The selected catalog record is not present in the verified saved generation.");
-      const text = formatRecords([artifactRecord], exchangeFormat);
-      await lease.recheck();
-      downloadText(exchangeFilename(artifactRecord.id, exchangeFormat), text, exchangeMime(exchangeFormat));
+      await verifyFreshness("authoritative", async (lease) => {
+        const artifactRecord = activeRevision(lease.artifactWorkspace).records.find((item) => item.id === record.id);
+        if (!artifactRecord) throw new Error("The selected catalog record is not present in the verified saved generation.");
+        const text = formatRecords([artifactRecord], exchangeFormat);
+        return makeTextArtifact(exchangeFilename(artifactRecord.id, exchangeFormat), text, exchangeMime(exchangeFormat));
+      });
     } catch (error) {
       setOutputError(error instanceof Error ? error.message : "The catalog record could not be exported safely.");
     }
@@ -1507,7 +1554,7 @@ function ChangesView({ workspace, config, busy, onSave, onRollback }: { workspac
   );
 }
 
-function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces, activeLocal, dirty, storageStatus, storageInspection, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; auditState: "idle" | "valid" | "invalid"; outputGate: OutputGate; busy: boolean; localWorkspaces: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
+function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces, activeLocal, dirty, storageStatus, storageInspection, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onDownloadContinuityWitness, onVerifyExternalContinuity, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; auditState: "idle" | "valid" | "invalid"; outputGate: OutputGate; busy: boolean; localWorkspaces: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onDownloadContinuityWitness: () => Promise<boolean | undefined>; onVerifyExternalContinuity: (input: LocalExternalContinuityInput) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
   const [documentKind, setDocumentKind] = useState<DocumentKind>("system-inventory");
   const [exchangeFormat, setExchangeFormat] = useState<ExchangeFormat>("laclab-json");
   const [incidentId, setIncidentId] = useState(workspace.incidents[0]?.id ?? "");
@@ -1540,15 +1587,15 @@ function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces,
     try {
       const technical = kind === "technical";
       if (!technical && publicNoticeBlocked) throw new Error(publicNoticeBlockMessage);
-      const lease = await verifyFreshness(technical ? "diagnostic" : "authoritative");
-      const generatedAt = new Date().toISOString();
-      const filename = technical ? TECHNICAL_REPORT_FILENAME : PUBLIC_NOTICE_FILENAME;
-      const html = technical
-        ? await makeTechnicalReportHtml(workspace, auditState, generatedAt, { savedCopyStatus: lease.savedCopyStatus, continuityStatus: lease.continuityStatus, continuityReason: lease.continuityReason })
-        : await makePublicNoticeHtml(lease.artifactWorkspace, generatedAt);
-      await lease.recheck();
-      openHtmlDocument(filename, html, download);
-      onNotice((technical ? "Technical report" : "Public notice") + (download ? " HTML downloaded." : " opened as notebook HTML."));
+      await verifyFreshness(technical ? "diagnostic" : "authoritative", async (lease) => {
+        const generatedAt = new Date().toISOString();
+        const filename = technical ? TECHNICAL_REPORT_FILENAME : PUBLIC_NOTICE_FILENAME;
+        const html = technical
+          ? await makeTechnicalReportHtml(workspace, auditState, generatedAt, { savedCopyStatus: lease.savedCopyStatus, continuityStatus: lease.continuityStatus, continuityReason: lease.continuityReason, externalContinuity: lease.externalContinuity })
+          : await makePublicNoticeHtml(lease.artifactWorkspace, generatedAt);
+        return makeHtmlArtifact(filename, html, download);
+      });
+      onNotice((technical ? "Technical report" : "Public notice") + (download ? " download requested." : " open requested as notebook HTML."));
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "The report file could not be prepared safely.");
     }
@@ -1557,11 +1604,11 @@ function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces,
   async function deliverCatalog() {
     try {
       if (catalogOutputBlocked) throw new Error(outputGate.reason || "Catalog export requires at least one record.");
-      const lease = await verifyFreshness("authoritative");
-      const text = formatRecords(activeRevision(lease.artifactWorkspace).records, exchangeFormat);
-      await lease.recheck();
-      downloadText(exchangeFilename("in-keeping-catalog", exchangeFormat), text, exchangeMime(exchangeFormat));
-      onNotice("Catalog compatibility file downloaded from the verified named saved generation.");
+      await verifyFreshness("authoritative", async (lease) => {
+        const text = formatRecords(activeRevision(lease.artifactWorkspace).records, exchangeFormat);
+        return makeTextArtifact(exchangeFilename("in-keeping-catalog", exchangeFormat), text, exchangeMime(exchangeFormat));
+      });
+      onNotice("Catalog compatibility download requested from the fenced named saved generation.");
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "The catalog file could not be prepared safely.");
     }
@@ -1570,11 +1617,11 @@ function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces,
   async function deliverOperationalDocument() {
     try {
       if (operationalOutputBlocked) throw new Error(outputGate.reason || "Select an incident before generating this incident-bound document.");
-      const lease = await verifyFreshness("authoritative");
-      const text = makeOperationalDocument(lease.artifactWorkspace, documentKind, incidentBoundDocument ? selectedIncidentId : undefined);
-      await lease.recheck();
-      downloadText("in-keeping-" + documentKind + ".md", text, "text/markdown");
-      onNotice("Operational document downloaded for review.");
+      await verifyFreshness("authoritative", async (lease) => {
+        const text = makeOperationalDocument(lease.artifactWorkspace, documentKind, incidentBoundDocument ? selectedIncidentId : undefined);
+        return makeTextArtifact("in-keeping-" + documentKind + ".md", text, "text/markdown");
+      });
+      onNotice("Operational document download requested for review.");
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "The operational document could not be prepared safely.");
     }
@@ -1612,13 +1659,13 @@ function ReportsView({ workspace, auditState, outputGate, busy, localWorkspaces,
           {operationalOutputBlocked && <p id="operational-output-blocked" className="field-error">{outputGate.reason || "Select an incident before generating this incident-bound document."}</p>}
           <details className="format-rules"><summary>Formatting rules</summary><dl>{DATA_FORMAT_RULES.map((item) => <div key={item.type}><dt>{item.type}</dt><dd>{item.rule}</dd></div>)}</dl></details>
         </section>
-        <LocalWorkspaceManager key={activeLocal?.id ?? "working-copy"} workspace={workspace} manifests={localWorkspaces} activeLocal={activeLocal} dirty={dirty} busy={busy} storageStatus={storageStatus} storageInspection={storageInspection} auditState={auditState} onCreate={onCreate} onSave={onSave} onAcceptContinuity={onAcceptContinuity} onDownloadContinuityReceipt={onDownloadContinuityReceipt} onCompareContinuityReceipt={onCompareContinuityReceipt} onOpen={onOpen} onRename={onRename} onDuplicate={onDuplicate} onDelete={onDelete} onForget={onForget} onOpenBackup={onOpenBackup} onRequestDurable={onRequestDurable} onNotice={onNotice} onReset={onReset} onVerify={onVerify} onRefreshStorage={onRefreshStorage} />
+        <LocalWorkspaceManager key={activeLocal?.id ?? "working-copy"} workspace={workspace} manifests={localWorkspaces} activeLocal={activeLocal} dirty={dirty} busy={busy} storageStatus={storageStatus} storageInspection={storageInspection} auditState={auditState} onCreate={onCreate} onSave={onSave} onAcceptContinuity={onAcceptContinuity} onDownloadContinuityReceipt={onDownloadContinuityReceipt} onCompareContinuityReceipt={onCompareContinuityReceipt} onDownloadContinuityWitness={onDownloadContinuityWitness} onVerifyExternalContinuity={onVerifyExternalContinuity} onOpen={onOpen} onRename={onRename} onDuplicate={onDuplicate} onDelete={onDelete} onForget={onForget} onOpenBackup={onOpenBackup} onRequestDurable={onRequestDurable} onNotice={onNotice} onReset={onReset} onVerify={onVerify} onRefreshStorage={onRefreshStorage} />
       </div>
     </section>
   );
 }
 
-function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy, storageStatus, storageInspection, auditState, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; manifests: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; busy: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; auditState: "idle" | "valid" | "invalid"; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
+function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy, storageStatus, storageInspection, auditState, onCreate, onSave, onAcceptContinuity, onDownloadContinuityReceipt, onCompareContinuityReceipt, onDownloadContinuityWitness, onVerifyExternalContinuity, onOpen, onRename, onDuplicate, onDelete, onForget, onOpenBackup, onRequestDurable, onNotice, onReset, onVerify, onRefreshStorage }: { workspace: Workspace; manifests: LocalWorkspaceManifest[]; activeLocal: ActiveLocalSession | null; dirty: boolean; busy: boolean; storageStatus: LocalStorageStatus; storageInspection: LocalWorkspaceStorageInspection | null; auditState: "idle" | "valid" | "invalid"; onCreate: (name: string) => Promise<boolean | undefined>; onSave: () => Promise<boolean | undefined>; onAcceptContinuity: (input: LocalContinuityAcceptanceInput) => Promise<boolean | undefined>; onDownloadContinuityReceipt: () => Promise<boolean | undefined>; onCompareContinuityReceipt: (file: File) => Promise<boolean | undefined>; onDownloadContinuityWitness: () => Promise<boolean | undefined>; onVerifyExternalContinuity: (input: LocalExternalContinuityInput) => Promise<boolean | undefined>; onOpen: (id: string) => Promise<boolean | undefined>; onRename: (id: string, name: string) => Promise<boolean | undefined>; onDuplicate: (id: string, name: string) => Promise<boolean | undefined>; onDelete: (id: string) => Promise<boolean | undefined>; onForget: () => Promise<void>; onOpenBackup: (review: WorkspaceBackupReview, disposition: EvidenceDispositionInput) => Promise<boolean>; onRequestDurable: () => Promise<void>; onNotice: (message: string) => void; onReset: () => void; onVerify: () => Promise<void>; onRefreshStorage: () => Promise<void> }) {
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState(activeLocal?.id ?? manifests[0]?.id ?? "");
   const [nextName, setNextName] = useState("");
@@ -1628,6 +1675,9 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
   const [continuityReference, setContinuityReference] = useState("");
   const [continuityRationale, setContinuityRationale] = useState("");
   const [continuityAcknowledged, setContinuityAcknowledged] = useState(false);
+  const [signedWitnessSet, setSignedWitnessSet] = useState("");
+  const [trustPolicy, setTrustPolicy] = useState("");
+  const [expectedPolicyDigest, setExpectedPolicyDigest] = useState("");
   const nameDraftId = useDraftRegistration(Boolean(name), () => setName(""));
   const nextNameDraftId = useDraftRegistration(Boolean(nextName), () => setNextName(""));
   const { confirmDiscard } = useContext(DraftGuardContext);
@@ -1657,7 +1707,7 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
       }
       const text = await makeWorkspaceBackup(source);
       downloadText(workspaceBackupFilename(source.name), text, WORKSPACE_BACKUP_MIME);
-      onNotice(`${target === "selected" ? `Saved workspace “${source.name}”` : `Current session “${source.name}”`} backed up as plaintext JSON.${recovered ? " The file contains its previous manifest-verified generation; stored generations were not changed." : ""}`);
+      onNotice(`${target === "selected" ? `Saved workspace “${source.name}”` : `Current session “${source.name}”`} plaintext JSON backup download requested.${recovered ? " The candidate contains its previous manifest-verified generation; stored generations were not changed." : ""}`);
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "The workspace backup could not be prepared safely.");
     } finally {
@@ -1692,6 +1742,15 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
     }
   }
 
+  async function selectExternalJson(event: ChangeEvent<HTMLInputElement>, apply: (text: string) => void) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (file.size < 1 || file.size > 4 * 1024 * 1024) { onNotice("External continuity JSON must be nonempty and no larger than 4 MiB."); return; }
+    try { apply(new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer())); }
+    catch { onNotice("External continuity material must be valid UTF-8 JSON."); }
+  }
+
   return (
     <section className="action-group local-workspace-manager" aria-labelledby="local-workspaces-title" aria-busy={busy || backupBusy}>
       <h2 id="local-workspaces-title">Local workspaces</h2>
@@ -1709,9 +1768,22 @@ function LocalWorkspaceManager({ workspace, manifests, activeLocal, dirty, busy,
       ) : <p className="empty-state">No local workspaces yet.</p>}
       {activeLocal && <div className="workspace-backup">
         <h3>Continuity checkpoint</h3>
-        <p className="field-help">{activeLocal.continuity.reason} Ordinary output requires an exact current independent receipt comparison; save, rename, and reload clear that process-local proof. A local checkpoint detects later coherent workspace replacement only while the checkpoint remains separate. It does not prove authenticity, truth, identity, custody, completeness, authority, or trusted time.</p>
+        <p className="field-help">{activeLocal.continuity.reason} An unsigned local receipt is diagnostic only. Ordinary output requires a signed witness chain plus an exact current policy digest obtained through a separate institutional trust channel; save, rename, and reload clear that process-local proof. Neither mechanism proves evidence truth, completeness, policy custody, identity, authority, or trusted time.</p>
         {continuityAccepted
-          ? <div className="button-row"><span className="audit-result valid">{activeLocal.continuity.status === "continuity-corroborated" ? "Independent receipt matches" : "Continuity verified locally"}</span><button type="button" className="secondary-button" disabled={busy || dirty || activeStale} onClick={() => { void onDownloadContinuityReceipt(); }}>Download independent receipt</button><label className="backup-file"><span>Compare independent receipt</span><input type="file" accept=".json,application/json" disabled={busy || dirty || activeStale} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void onCompareContinuityReceipt(file); }} /></label></div>
+          ? <>
+              <div className="button-row"><span className="audit-result valid">{activeLocal.continuity.status === "continuity-corroborated" ? "Unsigned local receipt matches" : "Continuity verified locally"}</span><button type="button" className="secondary-button" disabled={busy || dirty || activeStale} onClick={() => { void onDownloadContinuityReceipt(); }}>Download local comparison receipt</button><label className="backup-file"><span>Compare local receipt</span><input type="file" accept=".json,application/json" disabled={busy || dirty || activeStale} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void onCompareContinuityReceipt(file); }} /></label><button type="button" className="secondary-button" disabled={busy || dirty || activeStale} onClick={() => { void onDownloadContinuityWitness(); }}>Download unsigned witness request</button></div>
+              <form className="workspace-create" onSubmit={async (event) => {
+                event.preventDefault();
+                const verified = await onVerifyExternalContinuity({ signedWitnessSet, trustPolicy, expectedPolicyDigest, originScope: location.origin });
+                if (verified) { setSignedWitnessSet(""); setTrustPolicy(""); setExpectedPolicyDigest(""); }
+              }}>
+                <p className="field-help">Supply the externally signed witness set and policy as separate JSON files. Enter the exact current policy SHA-256 obtained outside those files; the policy cannot authorize itself.</p>
+                <label className="backup-file"><span>{signedWitnessSet ? "Signed witness set selected" : "Select signed witness set"}</span><input type="file" accept=".json,application/json" disabled={busy || dirty || activeStale} onChange={(event) => { void selectExternalJson(event, setSignedWitnessSet); }} /></label>
+                <label className="backup-file"><span>{trustPolicy ? "Trust policy selected" : "Select trust policy"}</span><input type="file" accept=".json,application/json" disabled={busy || dirty || activeStale} onChange={(event) => { void selectExternalJson(event, setTrustPolicy); }} /></label>
+                <label><span>Expected current policy SHA-256 · separate channel</span><input value={expectedPolicyDigest} onChange={(event) => setExpectedPolicyDigest(event.target.value.trim().toLowerCase())} pattern="[a-f0-9]{64}" maxLength={64} autoComplete="off" required /></label>
+                <div className="button-row"><button type="submit" disabled={busy || dirty || activeStale || !signedWitnessSet || !trustPolicy || !/^[a-f0-9]{64}$/.test(expectedPolicyDigest)}>Verify external checkpoint material</button><span className={`audit-result ${activeLocal.externalContinuity.status === "trusted-match" ? "valid" : "idle"}`}>{activeLocal.externalContinuity.status === "trusted-match" ? "External checkpoint match" : "External proof required"}</span></div>
+              </form>
+            </>
           : activeLocal.continuity.status === "continuity-failure"
             ? <p className="field-error" role="alert">Continuity failure: this lineage cannot be re-anchored in place. Preserve it for diagnosis and create a separately accepted new baseline.</p>
             : <form className="workspace-create" onSubmit={async (event) => {
@@ -1912,30 +1984,14 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function openHtmlDocument(filename: string, html: string, download: boolean) {
-  activateLocalFile(new File([html], filename, { type: REPORT_MIME }), download);
+function makeHtmlArtifact(filename: string, html: string, download: boolean): PreparedArtifact {
+  return { file: new File([html], filename, { type: REPORT_MIME }), disposition: download ? "download" : "open" };
+}
+
+function makeTextArtifact(filename: string, text: string, type: string): PreparedArtifact {
+  return { file: new File([text], filename, { type: type + ";charset=utf-8" }), disposition: "download" };
 }
 
 function downloadText(filename: string, text: string, type: string) {
-  activateLocalFile(new File([text], filename, { type: type + ";charset=utf-8" }), true);
-}
-
-function activateLocalFile(file: File, download: boolean) {
-  const url = URL.createObjectURL(file);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.rel = "noopener noreferrer";
-  anchor.referrerPolicy = "no-referrer";
-  if (download) anchor.download = file.name;
-  else anchor.target = "_blank";
-  document.body.append(anchor);
-  try {
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  } catch (error) {
-    URL.revokeObjectURL(url);
-    throw error;
-  } finally {
-    anchor.remove();
-  }
+  activateBrowserFile(new File([text], filename, { type: type + ";charset=utf-8" }), "download");
 }
