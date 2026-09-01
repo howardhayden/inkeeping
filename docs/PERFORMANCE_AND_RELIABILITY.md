@@ -81,6 +81,7 @@ Revision rotation and audit capacity are distinct. An audit entry may preserve t
 | Validated serialized workspace save | 25 MiB | Save rejected; working copy remains open |
 | Retained generations per normal workspace | Active plus one prior | Older prior removed only in a normal successful rotation |
 | Plaintext workspace-backup review/export | 26 MiB envelope limit | Review/export rejected |
+| Recovery-transition review record | 64 KiB | Review formatting/parsing rejected; no destination is activated |
 | Storage inspection manifests | 100 | Inspection stops rather than silently omitting entries |
 | Storage inspection generation keys | 256 | Inspection stops rather than silently omitting entries |
 | Defensive inspection nodes | 1,000,000 | Candidate/manifest validation stops |
@@ -115,11 +116,14 @@ Reliability depends on what happens at a boundary:
 - A manifest/active digest disagreement stops open; the application does not mask it with a fallback.
 - A valid manifest-bound prior generation opens only as an unsaved recovery copy and does not rewrite/delete stored evidence.
 - Quarantine reconstruction creates a new UUID workspace after a second digest/full-payload verification and leaves the quarantined source unchanged.
-- An authoritative whole-catalog, per-record catalog, archive, service, operational, or Public Notice output requires a clean named session with no pending draft/operation or storage quarantine, no active operator-admitted-unverified evidence or unattributed catalog/archive/service content, and `continuity-corroborated` from an exact independently supplied receipt for the current generation. At activation time the application reopens and validates the saved generation with that receipt, compares its token, payload/state digest, audit head, active revision, anchor, evidence state, and full artifact snapshot with the session, renders from that reopened snapshot rather than the React closure, then repeats the saved-state/receipt/fingerprint checks after construction. Any read, fallback, mismatch, mutation, local-only continuity, stale receipt, or active-evidence failure stops activation.
+- Current import reviews preserve a durable, source/parser/ruleset-bound manifest of the complete emitted warning set inside the evidence-authority record. A legacy missing manifest remains visibly missing; neither a complete manifest nor an empty warning list proves parser correctness, evidence truth, or real-world completeness.
+- An authoritative whole-catalog, per-record catalog, archive, service, operational, or Public Notice output requires a clean named session with no pending draft/operation or storage quarantine, no active operator-admitted-unverified evidence or unattributed catalog/archive/service content, a matching local anchor, and `trusted-match` from a signed continuity-witness chain under the exact current trust-policy digest obtained through a separate channel. An unsigned receipt is diagnostic only. The application reopens and validates the saved generation, renders from that snapshot rather than the React closure, verifies the artifact-snapshot digest around a second saved-state/fingerprint inspection, and consumes the lease once. Any read, fallback, mismatch, mutation, local-only or unsigned continuity, missing/mismatched policy pin, invalid/revoked signature, topology failure, or active-evidence failure stops activation.
+- Final authoritative activation occurs synchronously inside one readonly IndexedDB transaction spanning the manifest, active generation, and continuity-anchor stores. It rechecks the exact identity, token, generation, payload and anchor digests, complete workspace serialization, complete anchor value, and prepared `File` digest before offering that file to the browser. Earlier overlapping writes are observed; later writes to those stores wait until the activation request returns.
 - The Technical Report is deliberately diagnostic. It renders the open session and labels its relationship to a named saved copy and continuity checkpoint as current, stale, unsaved, not saved, verified, or failed rather than borrowing authoritative-output status.
 - Report over-capacity failure occurs before file activation. Component exports and the plaintext workspace-backup path remain separate options when their own limits permit.
+- A recovery-transition review records an exact source review as `source-reviewed-not-activated`, denies continuity and authority inheritance, and requires a new lineage. It neither persists a destination nor verifies an actual clean device; the restore and its institutional evidence remain manual/external.
 
-These properties provide deterministic containment. They do not guarantee power-loss behavior outside the browser's IndexedDB transaction, device durability, malicious-extension resistance, or recovery without a backup. The two freshness reads and browser file activation are not one atomic transaction: another context can commit immediately after the final read, and a file can therefore become stale immediately after verification. The check establishes correspondence to one exact saved generation at the recorded check instants, not that the file is still latest when a recipient opens, imports, approves, or publishes it.
+These properties provide deterministic containment. They do not guarantee power-loss behavior outside the browser's IndexedDB transaction, device durability, malicious-extension resistance, or recovery without a backup. The final readonly fence closes the local write race only through the synchronous browser-activation request; it cannot observe whether the browser or operating system completed the requested save/open, and another context can commit after the request returns. The check therefore establishes only that exact bytes were offered while one exact saved generation was fenced. It does not establish continuing freshness, authorization, evidence truth, custody, or that the file is still latest when a recipient opens, imports, approves, or publishes it.
 
 ## Static asset and cache reliability
 
@@ -156,9 +160,9 @@ Use synthetic fixtures on every supported browser/OS class and at least one inst
 6. archival hierarchy review at the supported depth;
 7. save, reopen, token conflict, bound-prior recovery, and quarantine reconstruction;
 8. Technical Report generation near its accepted boundary;
-9. authoritative whole-catalog, per-record catalog, archive, service, operational, and Public Notice generation with the cross-tab notification delayed or unavailable, including a second-tab change before the first freshness read and during artifact construction;
-10. storage-read failure, recovery fallback, missing/local-only/failed continuity, stale or missing exact receipt, active admitted/unattributed content, pending draft/operation, storage quarantine, and artifact-snapshot mutation at output activation;
-11. actual new-tab and download behavior after the asynchronous double-open check, including popup/automatic-download policy and the 60-second Blob URL lifetime; and
+9. authoritative whole-catalog, per-record catalog, archive, service, operational, and Public Notice generation with cross-tab notification delayed or unavailable, including a second-tab change before the first inspection, during artifact construction, before the final readonly transaction, and while a competing write is queued;
+10. storage-read failure, recovery fallback, missing/local-only/unsigned continuity, missing or mismatched separately obtained policy digest, invalid/revoked signatures, witness gap/fork/rollback, active admitted/unattributed content, pending draft/operation, storage quarantine, artifact-snapshot mutation, and attempted lease reuse;
+11. actual new-tab and download behavior from the synchronous final activation request, including popup/automatic-download policy, queued writes after the request returns, and the 60-second Blob URL lifetime; and
 12. keyboard and assistive-technology completion of the same core tasks.
 
 Capture median and worst observed duration for repeated synthetic runs, peak browser memory when tooling permits, visible long tasks, crashes, and whether status announcements remain timely. Do not send these measurements from production operators.
@@ -180,14 +184,16 @@ When a maximum is safe but operationally slow, document a recommended working si
 | No silent data loss | Round-trip and malformed-line tests | Receiving-software sample when claiming compatibility |
 | Pagination | Shared 100-row unit/interface contracts | Keyboard/selection check on large synthetic lists |
 | Atomic save and stale-tab block | fake-IndexedDB storage tests | Multi-tab smoke test |
-| Authoritative artifact freshness lease | Output-freshness race/error tests and interface contracts | Multi-tab test with delayed notification, before-click and during-construction mutation, and confirmed browser file activation |
-| Evidence and continuity output gates | Evidence-authority, continuity-anchor, output-freshness, and interface tests | Reviewer verifies operator-admitted-unverified evidence, imported catalogs without a bound authority record, and missing/mismatched checkpoints block authoritative output without obscuring the diagnostic routes |
+| Authoritative artifact freshness lease | Output-freshness and readonly-activation race/error tests plus interface contracts | Multi-tab test with delayed notification, before-click/during-construction mutation, a queued competing write, and observed browser file activation |
+| Evidence warning durability | Evidence-authority, workspace validation, backup, and report tests | Reviewer confirms warnings remain visible after save/reopen and backup review, while legacy absence remains explicit |
+| Evidence and signed-continuity output gates | Evidence-authority, continuity-anchor, external-continuity, output-freshness, and interface tests | Reviewer verifies admitted/unattributed evidence, unsigned or missing evidence, invalid signatures/topology, revoked keys, and a missing/mismatched separately obtained policy digest block ordinary output without obscuring diagnostic routes |
 | Bound prior recovery | Storage corruption/digest tests | Quarterly recovery drill |
 | Explicit quarantine reconstruction | Inspection/reconstruction tests | Quarterly synthetic drill |
 | Plaintext backup contract | Envelope/digest/version tests | Protected destination and restore drill |
+| Recovery-transition review | Exact binding, continuity-class, mutation, and limitation tests | Controlled clean-device/new-origin drill proving the manual new-lineage destination and retained external evidence; the repository cannot supply this evidence |
 | Report boundary/redaction | Report document tests | Open/download/layout/accessibility check |
 
-Automation is necessary but cannot establish Cloudflare account settings, browser eviction policy, DNS/mail continuity, assistive-technology usability, receiving-system behavior, or institutional handling of downloaded files. It also cannot make IndexedDB verification and browser/OS file activation atomic, observe that a programmatic anchor activation produced a durable file, or establish that a previously generated artifact remains current later.
+Automation is necessary but cannot establish Cloudflare account settings, browser eviction policy, DNS/mail continuity, assistive-technology usability, receiving-system behavior, independent custody/currency of a supplied trust-policy pin, institutional handling of downloaded files, or that a recovery drill used a genuinely clean device. It cannot observe that a synchronous browser activation produced a durable file or establish that a previously generated artifact remains current later.
 
 ## Availability and continuity
 
@@ -199,7 +205,7 @@ Set availability objectives at the service-owner level, distinguishing:
 - browser-local persistence; and
 - authoritative downstream-system availability.
 
-IN KEEPING cannot guarantee the last three through Cloudflare uptime. Continuity controls are the single canonical origin, explicit named saves, plaintext backups kept in approved encrypted storage, Technical Reports, verified recovery, and documented downstream handoff.
+IN KEEPING cannot guarantee the last three through Cloudflare uptime. Continuity controls are the single canonical origin, explicit named saves, plaintext backups kept in approved encrypted storage, diagnostic Technical Reports, signed external checkpoint material with a separately obtained policy digest for ordinary output, source-reviewed recovery-transition records, and documented manual new-lineage recovery and downstream handoff. The application does not itself verify that a clean-device restore occurred.
 
 Do not create a second live hostname as an availability failover: it creates a separate IndexedDB store and risks split work. Restore the same canonical origin or use the approved backup/continuity procedure.
 

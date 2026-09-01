@@ -1,5 +1,6 @@
 import { assessActiveEvidence, validateWorkspaceSnapshot, workspaceStateDigest, type Workspace } from "./lab-core.ts";
-import type { LocalWorkspaceOpen } from "./lab-storage.ts";
+import type { LocalWorkspaceActivationExpectation, LocalWorkspaceOpen } from "./lab-storage.ts";
+import { activateBrowserFile, isBrowserFile, readBrowserFileBytes, type BrowserFileDisposition } from "./browser-file-activation.ts";
 
 export type SavedCopyStatus = "current" | "stale" | "unsaved-changes" | "not-saved";
 export type OutputFreshnessMode = "authoritative" | "diagnostic";
@@ -21,20 +22,22 @@ export type OutputFreshnessContext = {
   getStorageVersion: () => number;
   getStorageQuarantined: () => boolean;
   openWorkspace: (id: string) => Promise<LocalWorkspaceOpen>;
+  activateWorkspace: (expected: LocalWorkspaceActivationExpectation, file: File, disposition: BrowserFileDisposition) => Promise<void>;
 };
 
 export type OutputFreshnessLease = {
   savedCopyStatus: SavedCopyStatus;
   continuityStatus: LocalWorkspaceOpen["continuity"]["status"] | "unanchored";
   continuityReason: string;
+  externalContinuity: LocalWorkspaceOpen["externalContinuity"];
   /** The exact verified saved snapshot for authoritative artifact rendering. */
   artifactWorkspace: Workspace;
   /**
-   * Re-read the named generation after asynchronous artifact construction and
-   * immediately before activating the file. No browser event can interleave
-   * between a resolved recheck and synchronous Blob/anchor activation.
+   * Single-use final activation. Authoritative output is synchronously offered
+   * to the browser while an IndexedDB snapshot over the exact saved state is
+   * still held. This does not prove that an OS save completed.
    */
-  recheck: () => Promise<void>;
+  activate: (file: File, disposition: BrowserFileDisposition) => Promise<void>;
 };
 
 type Inspection = {
@@ -43,8 +46,10 @@ type Inspection = {
   savedWorkspace: Workspace | null;
   continuityStatus: LocalWorkspaceOpen["continuity"]["status"] | "unanchored";
   continuityReason: string;
+  externalContinuity: LocalWorkspaceOpen["externalContinuity"];
   evidenceBlocked: boolean;
   evidenceReason: string;
+  activationIdentity: Omit<LocalWorkspaceActivationExpectation, "workspace" | "artifactSha256"> | null;
 };
 
 function assertSessionVersion(context: OutputFreshnessContext): void {
@@ -70,11 +75,20 @@ function assertLeaseContext(context: OutputFreshnessContext, mode: OutputFreshne
   }
 }
 
+async function sha256Hex(value: BufferSource): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function completeWorkspaceDigest(workspace: Workspace): Promise<string> {
   const serialized = JSON.stringify(workspace);
   if (serialized === undefined) throw new Error("The artifact workspace cannot be serialized.");
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return sha256Hex(new TextEncoder().encode(serialized));
+}
+
+async function completeArtifactDigest(file: File): Promise<string> {
+  if (!isBrowserFile(file)) throw new Error("Artifact activation requires an immutable File.");
+  return sha256Hex(await readBrowserFileBytes(file));
 }
 
 async function inspectSavedCopy(
@@ -83,7 +97,7 @@ async function inspectSavedCopy(
   mode: OutputFreshnessMode,
 ): Promise<Inspection> {
   assertLeaseContext(context, mode);
-  if (!context.activeLocal) return { savedCopyStatus: "not-saved", fingerprint: "not-saved", savedWorkspace: null, continuityStatus: "unanchored", continuityReason: "No named saved workspace is attached.", evidenceBlocked: false, evidenceReason: "" };
+  if (!context.activeLocal) return { savedCopyStatus: "not-saved", fingerprint: "not-saved", savedWorkspace: null, continuityStatus: "unanchored", continuityReason: "No named saved workspace is attached.", externalContinuity: { status: "policy-pin-missing", reason: "No external continuity proof was verified.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null }, evidenceBlocked: false, evidenceReason: "", activationIdentity: null };
 
   let opened: LocalWorkspaceOpen;
   try {
@@ -114,6 +128,7 @@ async function inspectSavedCopy(
   const stale = opened.recoveredFromPrevious || !sameToken || !sameSessionState;
   const continuityStatus = opened.continuity?.status ?? "unanchored";
   const continuityReason = opened.continuity?.reason ?? "No separately retained local continuity checkpoint exists.";
+  const externalContinuity = opened.externalContinuity ?? { status: "policy-pin-missing", reason: "No external continuity proof was verified.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
   const evidence = assessActiveEvidence(opened.workspace);
   const evidenceBlocked = evidence.blocked;
   const evidenceReason = evidenceBlocked ? evidence.reason : "";
@@ -134,16 +149,36 @@ async function inspectSavedCopy(
     savedCopyStatus,
     continuityStatus,
     continuityAnchorDigest: opened.continuity?.anchorDigest ?? null,
+    externalContinuityStatus: externalContinuity.status,
+    externalContinuityReason: externalContinuity.reason,
+    externalWitnessDigest: externalContinuity.witnessDigest,
+    externalPolicyId: externalContinuity.policyId,
+    externalPolicyRevision: externalContinuity.policyRevision,
+    externalPolicyDigest: externalContinuity.policyDigest,
+    externalTopologyStatus: externalContinuity.topology?.status ?? null,
     evidenceBlocked,
   });
-  return { savedCopyStatus, fingerprint, savedWorkspace: opened.workspace, continuityStatus, continuityReason, evidenceBlocked, evidenceReason };
+  const activationIdentity = !stale
+    && opened.continuityAnchor
+    && (continuityStatus === "continuity-verified-local" || continuityStatus === "continuity-corroborated")
+    && externalContinuity.status === "trusted-match"
+    ? {
+        id: opened.manifest.id,
+        token: opened.token,
+        generation: opened.openedGeneration,
+        payloadDigest: opened.manifest.payloadDigest,
+        anchorDigest: opened.continuityAnchor.digest,
+        continuityAnchor: opened.continuityAnchor,
+      }
+    : null;
+  return { savedCopyStatus, fingerprint, savedWorkspace: opened.workspace, continuityStatus, continuityReason, externalContinuity, evidenceBlocked, evidenceReason, activationIdentity };
 }
 
 function authoritativeFailure(inspection: Inspection, context: OutputFreshnessContext): Error | null {
   if (inspection.savedCopyStatus === "current") {
     if (inspection.evidenceBlocked) return new Error(`Authoritative artifact generation is blocked by unresolved evidence authority. ${inspection.evidenceReason}`);
-    if (inspection.continuityStatus === "continuity-corroborated") return null;
-    return new Error(`The exact saved generation has not been rechecked against an independently retained current continuity receipt. ${inspection.continuityReason}`);
+    if (inspection.activationIdentity) return null;
+    return new Error("The exact saved generation has not been matched to a signed witness chain under the exact current policy digest obtained through a separate trust channel.");
   }
   if (context.dirty || inspection.savedCopyStatus === "unsaved-changes") {
     return new Error("Save the current workspace before generating this authoritative artifact; the session contains unsaved changes.");
@@ -182,12 +217,24 @@ export async function verifyOutputFreshness(
   const artifactWorkspaceDigest = await completeWorkspaceDigest(artifactWorkspace);
   assertLeaseContext(context, mode);
 
+  let consumed = false;
   return {
     savedCopyStatus: initial.savedCopyStatus,
     continuityStatus: initial.continuityStatus,
     continuityReason: initial.continuityReason,
+    externalContinuity: initial.externalContinuity,
     artifactWorkspace,
-    recheck: async () => {
+    activate: async (file, disposition) => {
+      if (consumed) throw new Error("This artifact freshness lease was already consumed. Generate the artifact again.");
+      consumed = true;
+      if (disposition !== "download" && disposition !== "open") throw new Error("Artifact activation disposition is unsupported.");
+      let artifactSha256: string;
+      try {
+        artifactSha256 = await completeArtifactDigest(file);
+      } catch (error) {
+        if (error instanceof Error && /requires an immutable File/.test(error.message)) throw error;
+        throw new Error("The prepared artifact bytes could not be verified. No artifact was opened or downloaded.", { cause: error });
+      }
       let currentArtifactWorkspaceDigest: string;
       try {
         currentArtifactWorkspaceDigest = await completeWorkspaceDigest(artifactWorkspace);
@@ -203,7 +250,31 @@ export async function verifyOutputFreshness(
       if (currentFailure || current.fingerprint !== initial.fingerprint || current.savedCopyStatus !== initial.savedCopyStatus) {
         throw new Error("The session or named saved workspace changed while the artifact was being prepared. No artifact was opened or downloaded; retry from the current state.");
       }
+      try {
+        currentArtifactWorkspaceDigest = await completeWorkspaceDigest(artifactWorkspace);
+      } catch {
+        throw new Error("The verified artifact snapshot changed while the artifact was being prepared. No artifact was opened or downloaded.");
+      }
+      if (currentArtifactWorkspaceDigest !== artifactWorkspaceDigest) {
+        throw new Error("The verified artifact snapshot changed while the artifact was being prepared. No artifact was opened or downloaded.");
+      }
+      let currentArtifactSha256: string;
+      try {
+        currentArtifactSha256 = await completeArtifactDigest(file);
+      } catch {
+        throw new Error("The prepared artifact bytes could not be rechecked. No artifact was opened or downloaded.");
+      }
+      if (currentArtifactSha256 !== artifactSha256) {
+        throw new Error("The prepared artifact bytes changed while freshness was being verified. No artifact was opened or downloaded.");
+      }
       assertLeaseContext(context, mode);
+      if (mode === "authoritative") {
+        if (!initial.activationIdentity) throw new Error("The verified saved generation lacks an externally corroborated activation identity.");
+        await context.activateWorkspace({ ...initial.activationIdentity, artifactSha256, workspace: artifactWorkspace }, file, disposition);
+        return;
+      }
+      assertLeaseContext(context, mode);
+      activateBrowserFile(file, disposition);
     },
   };
 }

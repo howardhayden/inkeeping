@@ -1,4 +1,5 @@
 import { CATALOG_PACKET_SCHEMA, MAX_RECORDS, type CatalogRecord, type RecordFormat } from "./lab-core.ts";
+import { protectSpreadsheetCell } from "./spreadsheet-safety.ts";
 
 export type ExchangeFormat = "laclab-json" | "dublin-core" | "mods" | "csl-json" | "schema-jsonld" | "ris" | "bibtex" | "csv" | "tsv" | "marc-text";
 
@@ -179,8 +180,8 @@ function bib(value: string): string {
 function bibNames(values: string[]): string { return values.map((value) => `{${bib(value)}}`).join(" and "); }
 function cell(value: string, delimiter: string): string { return value.includes(delimiter) || /["\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value; }
 function encodeTabularCell(value: string, delimiter: string): string {
-  const escaped = delimiter === "\t" ? value.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\r/g, "\\r").replace(/\n/g, "\\n") : value;
-  return /^'*(?:[=+@-])/.test(escaped.trimStart()) ? `'${escaped}` : escaped;
+  const protectedValue = protectSpreadsheetCell(value);
+  return delimiter === "\t" ? protectedValue.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\r/g, "\\r").replace(/\n/g, "\\n") : protectedValue;
 }
 function plain(value: string): string { return value.replace(/[\r\n\t]+/g, " ").trim(); }
 function id(record: CatalogRecord, scheme: string): string { return record.identifiers.find((item) => item.scheme === scheme)?.value ?? ""; }

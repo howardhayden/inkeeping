@@ -31,7 +31,7 @@ Accessibility is a release requirement because import review, save/recovery, inc
 - Import and backup results use `role="alert"` when blocked and `role="status"` when ready.
 - A polite, atomic live region announces global operation messages.
 - Storage quarantine has an alert heading, live candidate status, explicit selection, and named reconstruction action.
-- Ordinary-output controls expose explanatory text when a named clean save, an exact independently supplied current receipt, or `continuity-corroborated` status is missing; when a draft/operation or storage quarantine remains; or when active operator-admitted-unverified evidence or unattributed catalog/archive/service content remains. Click-time storage, recovery, continuity, evidence-authority, mutation, and race failures are announced through the global operation status instead of silently activating a file.
+- Ordinary-output controls expose explanatory text when a named clean save, signed witness set, trust policy, exact current policy SHA-256 obtained through the separate channel, or resulting `trusted-match` is missing; when a draft/operation or storage quarantine remains; or when active operator-admitted-unverified evidence or unattributed catalog/archive/service content remains. Unsigned local receipts are identified as diagnostic only. Storage, recovery, signature/topology/policy, evidence-authority, artifact-mutation, and final-fence failures are announced through the global operation status instead of silently activating a file.
 - Field errors are associated with the relevant form and use alert semantics.
 - Pagers expose a polite `start–end of total` status.
 - Status is expressed in text as well as color. Decorative severity marks are hidden from assistive technology.

@@ -298,6 +298,45 @@ test("duplicate DOI matching normalizes the common DOI label prefix", async () =
   assert.ok(review.findings.some((finding) => finding.code === "IDENTIFIER_DUPLICATE"));
 });
 
+test("DOI identity cannot split across typed identifiers and resolver links in any catalog parser", async () => {
+  const doi = "10.5555/carrier-split";
+  const resolver = `https://doi.org/${doi}`;
+  const leader = "00000nam a2200000 i 4500";
+  const fixtures = [
+    ["split.csl.json", "application/json", JSON.stringify([{ id: "CSL-A", title: "Typed DOI", DOI: doi }, { id: "CSL-B", title: "Resolver DOI", URL: resolver }])],
+    ["split.jsonld", "application/ld+json", JSON.stringify({ "@context": "https://schema.org", "@graph": [{ "@id": "urn:in-keeping:JSONLD-A", "@type": "Book", name: "Typed DOI", identifier: { "@type": "PropertyValue", propertyID: "doi", value: doi } }, { "@id": "urn:in-keeping:JSONLD-B", "@type": "Book", name: "Resolver DOI", url: resolver }] })],
+    ["split.ris", "application/x-research-info-systems", `TY  - BOOK\nID  - RIS-A\nTI  - Typed DOI\nDO  - ${doi}\nER  - \nTY  - BOOK\nID  - RIS-B\nTI  - Resolver DOI\nUR  - ${resolver}\nER  - \n`],
+    ["split.bib", "application/x-bibtex", `@misc{BIB-A,title={Typed DOI},doi={${doi}}}\n@misc{BIB-B,title={Resolver DOI},url={${resolver}}}\n`],
+    ["split.mrk", "text/plain", `=LDR  ${leader}\n=001  MARC-A\n=245  10$aTyped DOI\n=024  7#$a${doi}$2doi\n=LDR  ${leader}\n=001  MARC-B\n=245  10$aResolver DOI\n=856  40$u${resolver}\n`],
+    ["split.marcxml", "application/xml", `<collection xmlns="http://www.loc.gov/MARC21/slim"><record><leader>${leader}</leader><controlfield tag="001">MARCXML-A</controlfield><datafield tag="245" ind1="1" ind2="0"><subfield code="a">Typed DOI</subfield></datafield><datafield tag="024" ind1="7" ind2=" "><subfield code="a">${doi}</subfield><subfield code="2">doi</subfield></datafield></record><record><leader>${leader}</leader><controlfield tag="001">MARCXML-B</controlfield><datafield tag="245" ind1="1" ind2="0"><subfield code="a">Resolver DOI</subfield></datafield><datafield tag="856" ind1="4" ind2="0"><subfield code="u">${resolver}</subfield></datafield></record></collection>`],
+    ["split.mods.xml", "application/xml", `<modsCollection xmlns="http://www.loc.gov/mods/v3"><mods><recordInfo><recordIdentifier>MODS-A</recordIdentifier></recordInfo><titleInfo><title>Typed DOI</title></titleInfo><identifier type="doi">${doi}</identifier></mods><mods><recordInfo><recordIdentifier>MODS-B</recordIdentifier></recordInfo><titleInfo><title>Resolver DOI</title></titleInfo><location><url>${resolver}</url></location></mods></modsCollection>`],
+    ["split.dc.xml", "application/xml", `<ik:collection xmlns:ik="https://hah.dev/ns/in-keeping/1" xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:dc="http://purl.org/dc/elements/1.1/"><oai_dc:dc><dc:identifier>urn:in-keeping:DC-A</dc:identifier><dc:title>Typed DOI</dc:title><dc:identifier>doi:${doi}</dc:identifier></oai_dc:dc><oai_dc:dc><dc:identifier>urn:in-keeping:DC-B</dc:identifier><dc:title>Resolver DOI</dc:title><dc:identifier>${resolver}</dc:identifier></oai_dc:dc></ik:collection>`],
+  ];
+  for (const [name, type, source] of fixtures) {
+    const review = await reviewImport(new File([source], name, { type }));
+    assert.equal(review.blocked, true, `${name}: ${review.summary}`);
+    assert.ok(review.findings.some((finding) => finding.code === "IDENTIFIER_DUPLICATE"), name);
+  }
+
+  const matching = await reviewImport(new File([JSON.stringify([{ id: "MATCH", title: "Corroborating carriers", DOI: doi, URL: resolver }])], "matching.csl.json", { type: "application/json" }));
+  assert.equal(matching.blocked, false, matching.summary);
+  assert.equal(matching.findings.some((finding) => finding.code === "IDENTITY_CARRIER_CONFLICT"), false);
+  const conflicting = await reviewImport(new File([JSON.stringify([{ id: "CONFLICT", title: "Conflicting carriers", DOI: doi, URL: "https://doi.org/10.5555/other" }])], "conflicting.csl.json", { type: "application/json" }));
+  assert.equal(conflicting.blocked, false, conflicting.summary);
+  assert.ok(conflicting.findings.some((finding) => finding.code === "IDENTITY_CARRIER_CONFLICT"));
+});
+
+test("destination duplicate protection is symmetric across DOI carrier types", async () => {
+  const typed = await reviewImport(new File(["TY  - BOOK\nID  - TYPED\nTI  - Typed\nDO  - 10.5555/sequential\nER  - \n"], "typed.ris", { type: "application/x-research-info-systems" }));
+  const linked = await reviewImport(new File(["TY  - BOOK\nID  - LINKED\nTI  - Linked\nUR  - https://doi.org/10.5555/sequential\nER  - \n"], "linked.ris", { type: "application/x-research-info-systems" }));
+  for (const [first, second] of [[typed, linked], [linked, typed]]) {
+    const once = await applyImport(await createBlankWorkspace(), first, evidenceDisposition());
+    const twice = await applyImport(once, second, evidenceDisposition());
+    assert.equal(activeRevision(twice).records.length, 1);
+    assert.equal(twice.evidenceApplications.at(-1).reason, "destination-identity-conflict");
+  }
+});
+
 test("maximum-length import filenames still produce a saveable revision label", async () => {
   const packet = {
     schema: CATALOG_PACKET_SCHEMA, version: 1, kind: "catalog-batch", provenance: { label: "Long filename" },
@@ -1483,6 +1522,43 @@ test("singular catalog identities fail closed while standards-repeatable identif
     const review = await reviewImport(new File([marcXml(`<controlfield tag="001">XML-BAD</controlfield>${field}`)], "bad-identity.marcxml", { type: "application/xml" }));
     assert.equal(review.blocked, true, `${field}: ${review.summary}`);
   }
+});
+
+test("MARC 024 indicators and source codes cannot contradict identifier type", async () => {
+  const leader = "00000nam a2200000 i 4500";
+  const mnemonic = (field) => `=LDR  ${leader}\n=001  MARC-024\n=245  10$aIdentity\n${field}\n`;
+  const xml = (field) => `<record xmlns="http://www.loc.gov/MARC21/slim"><leader>${leader}</leader><controlfield tag="001">MARCXML-024</controlfield><datafield tag="245" ind1="1" ind2="0"><subfield code="a">Identity</subfield></datafield>${field}</record>`;
+  const hostile = [
+    ["=024  1#$a10.5555/forged$2doi", '<datafield tag="024" ind1="1" ind2=" "><subfield code="a">10.5555/forged</subfield><subfield code="2">doi</subfield></datafield>'],
+    ["=024  7#$a10.5555/missing", '<datafield tag="024" ind1="7" ind2=" "><subfield code="a">10.5555/missing</subfield></datafield>'],
+    ["=024  8#$a10.5555/forged$2doi", '<datafield tag="024" ind1="8" ind2=" "><subfield code="a">10.5555/forged</subfield><subfield code="2">doi</subfield></datafield>'],
+    ["=024  9#$a10.5555/forged", '<datafield tag="024" ind1="9" ind2=" "><subfield code="a">10.5555/forged</subfield></datafield>'],
+    ["=024  70$a10.5555/forged$2doi", '<datafield tag="024" ind1="7" ind2="0"><subfield code="a">10.5555/forged</subfield><subfield code="2">doi</subfield></datafield>'],
+  ];
+  for (const [textField, xmlField] of hostile) {
+    const textReview = await reviewImport(new File([mnemonic(textField)], "hostile-024.mrk", { type: "text/plain" }));
+    assert.equal(textReview.blocked, true, textReview.summary);
+    assert.match(textReview.summary, /024.*indicator|\$2/i);
+    const xmlReview = await reviewImport(new File([xml(xmlField)], "hostile-024.marcxml", { type: "application/xml" }));
+    assert.equal(xmlReview.blocked, true, xmlReview.summary);
+    assert.match(xmlReview.summary, /024.*indicator|\$2/i);
+  }
+
+  const accepted = await reviewImport(new File([mnemonic("=024  7#$a10.5555/declared$2doi\n=024  1#$a012345678905\n=024  2#$a9790123456785\n=024  7#$a10.5555/not-doi$2d-o-i")], "accepted-024.mrk", { type: "text/plain" }));
+  assert.equal(accepted.blocked, false, accepted.summary);
+  assert.deepEqual(accepted.records[0].identifiers.map((item) => item.scheme), ["doi", "upc", "ismn", "local"]);
+});
+
+test("MARC mnemonic and XML share one conservative ISBN qualifier rule", async () => {
+  const leader = "00000nam a2200000 i 4500";
+  const text = await reviewImport(new File([`=LDR  ${leader}\n=001  ISBN-TEXT\n=245  10$aQualified ISBN\n=020  ##$a9780306406157 (v.2)\n`], "qualified.mrk", { type: "text/plain" }));
+  const xml = await reviewImport(new File([`<record xmlns="http://www.loc.gov/MARC21/slim"><leader>${leader}</leader><controlfield tag="001">ISBN-XML</controlfield><datafield tag="245" ind1="1" ind2="0"><subfield code="a">Qualified ISBN</subfield></datafield><datafield tag="020" ind1=" " ind2=" "><subfield code="a">9780306406157 (v.2)</subfield></datafield></record>`], "qualified.marcxml", { type: "application/xml" }));
+  assert.equal(text.blocked, false, text.summary);
+  assert.equal(xml.blocked, false, xml.summary);
+  assert.equal(text.records[0].identifiers[0].value, "9780306406157");
+  assert.equal(xml.records[0].identifiers[0].value, "9780306406157");
+  assert.equal(text.findings.some((finding) => finding.code === "ISBN_INVALID"), false);
+  assert.equal(xml.findings.some((finding) => finding.code === "ISBN_INVALID"), false);
 });
 
 test("MODS and Dublin Core private identity rules retain legitimate repeatable evidence", async () => {

@@ -7,6 +7,15 @@ import { makeServiceRecord } from "../app/service-register.ts";
 
 const ACTIVE = { id: "ws-11111111-1111-4111-8111-111111111111", token: "token-a", savedAt: "2026-08-31T00:00:00.000Z" };
 
+function artifact(text = "prepared artifact") {
+  return new File([text], "artifact.txt", { type: "text/plain" });
+}
+
+async function fileSha256(file) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function opened(workspace, overrides = {}) {
   const token = overrides.token ?? ACTIVE.token;
   return {
@@ -15,7 +24,9 @@ function opened(workspace, overrides = {}) {
     token,
     recoveredFromPrevious: false,
     openedGeneration: 1,
-    continuity: { status: "continuity-corroborated", reason: "Current independent receipt matches; authenticity is not established.", anchorDigest: "b".repeat(64) },
+    continuity: { status: "continuity-corroborated", reason: "Current local receipt matches diagnostically; authenticity is not established.", anchorDigest: "b".repeat(64) },
+    externalContinuity: { status: "trusted-match", reason: "Signed witness and exact current policy digest match.", witnessDigest: "c".repeat(64), policyId: "policy.test", policyRevision: 1, policyDigest: "d".repeat(64), topology: { status: "corroborated-at-checkpoint" } },
+    continuityAnchor: { digest: "b".repeat(64) },
     ...overrides,
   };
 }
@@ -34,6 +45,7 @@ function context(workspace, overrides = {}) {
       getStorageVersion: () => 3,
       getStorageQuarantined: () => false,
       openWorkspace: async () => opened(workspace),
+      activateWorkspace: async () => undefined,
       ...overrides,
     },
     setVersion(next) { version = next; },
@@ -42,13 +54,20 @@ function context(workspace, overrides = {}) {
 
 test("authoritative output receives a current lease only for the exact named saved state", async () => {
   const workspace = await createBlankWorkspace("Fresh output");
-  const harness = context(workspace);
+  let activation = null;
+  const harness = context(workspace, {
+    activateWorkspace: async (expected, file, disposition) => { activation = { expected, file, disposition }; },
+  });
   const result = await verifyOutputFreshness(workspace, harness.value, "authoritative");
 
   assert.equal(result.savedCopyStatus, "current");
   assert.deepEqual(result.artifactWorkspace, workspace);
   assert.notEqual(result.artifactWorkspace, workspace, "the artifact is rendered from the reopened saved snapshot, not the React closure");
-  await result.recheck();
+  const file = artifact("exact artifact bytes");
+  await result.activate(file, "download");
+  assert.equal(activation.file, file);
+  assert.equal(activation.disposition, "download");
+  assert.equal(activation.expected.artifactSha256, await fileSha256(file));
 });
 
 test("authoritative output fails closed for unnamed, dirty, recovered, changed-token, and substituted saved states", async () => {
@@ -77,19 +96,19 @@ test("authoritative output fails closed for unnamed, dirty, recovered, changed-t
   );
 });
 
-test("authoritative output rejects local-only, unanchored, or failed continuity state", async () => {
+test("authoritative output rejects missing, untrusted, or mismatched external continuity evidence", async () => {
   const workspace = await createBlankWorkspace("Unanchored output");
   await assert.rejects(
-    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { continuity: { status: "continuity-verified-local", reason: "Only the same-origin checkpoint matches.", anchorDigest: "b".repeat(64) } }) }).value, "authoritative"),
-    /independently retained current continuity receipt.*same-origin checkpoint/i,
+    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { externalContinuity: { status: "policy-pin-missing", reason: "No separate policy pin.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null }, continuityAnchor: null }) }).value, "authoritative"),
+    /signed witness chain.*policy digest/i,
   );
   await assert.rejects(
-    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { continuity: { status: "unanchored", reason: "No checkpoint.", anchorDigest: null } }) }).value, "authoritative"),
-    /current continuity receipt.*No checkpoint/i,
+    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { externalContinuity: { status: "invalid-signature", reason: "Invalid signature.", witnessDigest: null, policyId: "policy.test", policyRevision: 1, policyDigest: "d".repeat(64), topology: null } }) }).value, "authoritative"),
+    /signed witness chain.*policy digest/i,
   );
   await assert.rejects(
-    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { continuity: { status: "continuity-failure", reason: "Anchor mismatch.", anchorDigest: null } }) }).value, "authoritative"),
-    /current continuity receipt.*Anchor mismatch/i,
+    verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { externalContinuity: { status: "content-mismatch", reason: "Anchor mismatch.", witnessDigest: "c".repeat(64), policyId: "policy.test", policyRevision: 1, policyDigest: "d".repeat(64), topology: null } }) }).value, "authoritative"),
+    /signed witness chain.*policy digest/i,
   );
 });
 
@@ -164,23 +183,23 @@ test("storage errors and a session change during the read produce no freshness l
   );
 });
 
-test("the lease recheck detects a saved-generation race after initial verification", async () => {
+test("the lease activation detects a saved-generation race after initial verification", async () => {
   const workspace = await createBlankWorkspace("Fresh output");
   let token = ACTIVE.token;
   const harness = context(workspace, { openWorkspace: async () => opened(workspace, { token }) });
   const result = await verifyOutputFreshness(workspace, harness.value, "authoritative");
 
   token = "token-b";
-  await assert.rejects(result.recheck(), /changed while the artifact was being prepared/i);
+  await assert.rejects(result.activate(artifact(), "download"), /changed while the artifact was being prepared/i);
 });
 
-test("the lease recheck rejects mutation of the exact artifact snapshot", async () => {
+test("the lease activation rejects mutation of the exact artifact snapshot", async () => {
   const workspace = await createBlankWorkspace("Mutable artifact snapshot");
   const harness = context(workspace);
   const result = await verifyOutputFreshness(workspace, harness.value, "authoritative");
 
   result.artifactWorkspace.name = "Substituted after verification";
-  await assert.rejects(result.recheck(), /verified artifact snapshot changed/i);
+  await assert.rejects(result.activate(artifact(), "download"), /verified artifact snapshot changed/i);
 });
 
 test("authoritative output rejects visible drafts and in-flight workspace operations", async () => {
@@ -198,13 +217,13 @@ test("authoritative output rejects visible drafts and in-flight workspace operat
   const draftHarness = context(workspace, { getPendingDrafts: () => pendingDrafts });
   const draftLease = await verifyOutputFreshness(workspace, draftHarness.value, "authoritative");
   pendingDrafts = true;
-  await assert.rejects(draftLease.recheck(), /save or discard.*form drafts/i);
+  await assert.rejects(draftLease.activate(artifact(), "download"), /save or discard.*form drafts/i);
 
   let operationInProgress = false;
   const operationHarness = context(workspace, { getOperationInProgress: () => operationInProgress });
   const lease = await verifyOutputFreshness(workspace, operationHarness.value, "authoritative");
   operationInProgress = true;
-  await assert.rejects(lease.recheck(), /operation is still finishing/i);
+  await assert.rejects(lease.activate(artifact(), "download"), /operation is still finishing/i);
 });
 
 test("authoritative output binds the current storage-inspection state", async () => {
@@ -218,7 +237,7 @@ test("authoritative output binds the current storage-inspection state", async ()
   const storageHarness = context(workspace, { getStorageVersion: () => storageVersion });
   const lease = await verifyOutputFreshness(workspace, storageHarness.value, "authoritative");
   storageVersion = 4;
-  await assert.rejects(lease.recheck(), /storage changed while freshness was being verified/i);
+  await assert.rejects(lease.activate(artifact(), "download"), /storage changed while freshness was being verified/i);
 });
 
 test("diagnostic output labels visible drafts as unsaved changes", async () => {
@@ -238,4 +257,66 @@ test("diagnostic reports truthfully distinguish working, unsaved, and stale copi
 
   const stale = await verifyOutputFreshness(workspace, context(workspace, { openWorkspace: async () => opened(workspace, { token: "token-b" }) }).value, "diagnostic");
   assert.equal(stale.savedCopyStatus, "stale");
+});
+
+test("a lease is single-use and a storage-fence failure performs no browser activation", async () => {
+  const workspace = await createBlankWorkspace("Single-use output");
+  let fences = 0;
+  const lease = await verifyOutputFreshness(workspace, context(workspace, {
+    activateWorkspace: async () => { fences += 1; throw new Error("final fence changed"); },
+  }).value, "authoritative");
+  const first = lease.activate(artifact("first"), "download");
+  await assert.rejects(lease.activate(artifact("second"), "download"), /already consumed/i);
+  await assert.rejects(first, /final fence changed/i);
+  assert.equal(fences, 1);
+});
+
+test("mutation while the second saved-state read is pending is detected before the storage fence", async () => {
+  const workspace = await createBlankWorkspace("Pending second read");
+  let reads = 0;
+  let releaseSecond;
+  let secondStarted;
+  const secondStartedPromise = new Promise((resolve) => { secondStarted = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  let fences = 0;
+  const harness = context(workspace, {
+    openWorkspace: async () => {
+      reads += 1;
+      if (reads === 2) { secondStarted(); await secondGate; }
+      return opened(workspace);
+    },
+    activateWorkspace: async () => { fences += 1; },
+  });
+  const lease = await verifyOutputFreshness(workspace, harness.value, "authoritative");
+  const activation = lease.activate(artifact(), "download");
+  await secondStartedPromise;
+  lease.artifactWorkspace.name = "Mutated while reopen was pending";
+  releaseSecond();
+  await assert.rejects(activation, /verified artifact snapshot changed/i);
+  assert.equal(fences, 0);
+});
+
+test("diagnostic output activates once without claiming a named-workspace fence", async () => {
+  const workspace = await createBlankWorkspace("Diagnostic activation");
+  let fences = 0;
+  let clicks = 0;
+  const lease = await verifyOutputFreshness(workspace, context(workspace, {
+    activeLocal: null,
+    activateWorkspace: async () => { fences += 1; },
+  }).value, "diagnostic");
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const anchor = { href: "", rel: "", referrerPolicy: "", download: "", target: "", click: () => { clicks += 1; }, remove: () => undefined };
+  globalThis.document = { createElement: () => anchor, body: { append: () => undefined } };
+  globalThis.window = { setTimeout: (callback) => { callback(); return 0; } };
+  try {
+    await lease.activate(artifact(), "download");
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+  assert.equal(fences, 0);
+  assert.equal(clicks, 1);
 });

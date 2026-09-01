@@ -2,6 +2,7 @@ import { reviewPublicHttpsUrl } from "./public-url.ts";
 import { assertSafeJsonText } from "./json-safety.ts";
 import { assertIdentityText } from "./identity-safety.ts";
 import { assertSafeXmlText, assertXmlElementNamespaces } from "./xml-safety.ts";
+import { protectSpreadsheetCell, unprotectSpreadsheetCell } from "./spreadsheet-safety.ts";
 
 export type ArchiveFieldKind =
   | "text"
@@ -563,7 +564,9 @@ function archiveCsvImport(text: string, digest: string): { schema: ArchiveSchema
   const rows = csvRows(text);
   if (rows.length < 2 || rows.length > MAX_UNITS + 2) throw new Error(`CSV must contain a header and 1–${MAX_UNITS.toLocaleString()} records.`);
   const headers = rows[0].map((value) => clean(value, 256));
+  headers.forEach((header) => assertIdentityText(header, "CSV header"));
   if (headers.some((header) => !header) || new Set(headers.map((header) => header.toLowerCase())).size !== headers.length) throw new Error("CSV headers must be nonempty and unique.");
+  if (new Set(headers.map((header) => header.normalize("NFKC").toLowerCase())).size !== headers.length) throw new Error("CSV headers contain visually confusable canonical aliases.");
   if (rows.some((row) => row.length !== headers.length)) throw new Error("Every CSV row must have the same number of columns as the header.");
 
   const atom = headers.includes("legacyId") && headers.includes("levelOfDescription");
@@ -575,6 +578,8 @@ function archiveCsvImport(text: string, digest: string): { schema: ArchiveSchema
   if (!dataRows.length) throw new Error("CSV contains no archival records.");
 
   const profile: ArchiveProfile = atom ? "atom" : "archives-space";
+  const foreignIdentityHeaders = atom ? ["ref_id", "unit_id"] : ["legacyId", "identifier"];
+  if (foreignIdentityHeaders.some((header) => headers.includes(header))) throw new Error("CSV mixes identity carriers from different archival profiles.");
   const schema = makeArchiveSchema(profile, atom ? "AtoM descriptions" : "ArchivesSpace archival objects", `SCHEMA-${profile.toUpperCase()}-${digest.slice(0, 10)}`);
   const known = new Set(atom
     ? ["legacyId", "parentId", "identifier", "title", "levelOfDescription", "eventDates", "eventTypes", "eventActors", "extentAndMedium", "scopeAndContent", "arrangement", "accessConditions", "reproductionConditions", "language", "subjectAccessPoints", "relatedUnitsOfDescription", "digitalObjectURI", "generalNote", "culture", "publicationStatus"]
@@ -671,7 +676,7 @@ function archiveCsvImport(text: string, digest: string): { schema: ArchiveSchema
       if (schemaField.repeatable) assignList(valuesMap, schemaField.id, raw);
       else assign(valuesMap, schemaField.id, raw);
     }
-    if (empty(valuesMap.reference_code)) valuesMap.reference_code = rawId;
+    if (empty(valuesMap.reference_code)) throw new Error(`CSV row ${index + 2} has no source reference code; technical row IDs cannot substitute for descriptive identity.`);
     if (empty(valuesMap.title)) throw new Error(`CSV row ${index + 2} has no title.`);
     const language = column(row, atom ? "culture" : "langcode") || "en";
     if (!languageTag(language)) throw new Error(`CSV row ${index + 2} has an invalid description language.`);
@@ -802,7 +807,19 @@ function assertSupportedEadStructure(document: Document, profile: ArchiveProfile
       const audience = node.getAttribute("audience");
       if (audience && !/^(?:internal|external|public)$/i.test(audience)) throw new Error("EAD description audience is unsupported.");
     }
-    if (profile === "ead4" && name === "formAvailable" && !node.getAttribute("valueURI") && !node.getAttribute("href")) throw new Error("EAD formAvailable requires a URI.");
+    if (profile === "ead4" && name === "formAvailable") {
+      const carriers = [node.getAttribute("valueURI"), node.getAttribute("href")].filter((value): value is string => Boolean(value));
+      if (carriers.length !== 1) throw new Error("EAD formAvailable requires exactly one URI carrier.");
+      const result = reviewPublicHttpsUrl(carriers[0]);
+      if (!result.ok) throw new Error(`EAD formAvailable URI: ${result.reason}`);
+    }
+    if (profile === "ead4" && name === "agent" && (node.parentNode as Element | null)?.localName === "agents") {
+      const labels = direct(node, "label");
+      const roles = direct(node, "role");
+      if (labels.length !== 1 || roles.length !== 1) throw new Error("A descriptive EAD4 agent requires exactly one label and one creator role.");
+      assertIdentityText(textOf(labels[0]), "EAD4 descriptive agent label");
+      if (textOf(roles[0]).toLowerCase() !== "creator") throw new Error("The supported EAD4 crosswalk accepts only an explicit creator agent role.");
+    }
     if (profile === "ead4" && name === "otherIdentificationData" && node.getAttribute("localType") !== "in-keeping:repository") throw new Error("EAD otherIdentificationData is outside the supported repository crosswalk.");
     if (profile !== "ead4" && name === "dao" && !node.getAttribute("href") && !node.getAttributeNS(XLINK_NS, "href")) throw new Error("EAD dao requires a URI.");
     children.forEach(visit);
@@ -820,7 +837,11 @@ function assertSupportedEadStructure(document: Document, profile: ArchiveProfile
     const titleName = profile === "ead4" ? "unitTitle" : "unittitle";
     const referenceName = profile === "ead4" ? "unitId" : "unitid";
     if (direct(identification[0], titleName).length !== 1) throw new Error("Every EAD description requires exactly one title.");
-    if (direct(identification[0], referenceName).length > 1) throw new Error("An EAD description may contain no more than one reference code.");
+    const references = direct(identification[0], referenceName);
+    if (references.length !== 1) throw new Error("Every EAD description requires exactly one source reference code.");
+    const referenceCode = textOf(references[0]);
+    assertIdentityText(referenceCode, "EAD reference code");
+    if (/\r|\n/.test(referenceCode)) throw new Error("EAD reference code cannot contain line breaks.");
     const repositories = profile === "ead4"
       ? direct(identification[0], "otherIdentificationData").filter((item) => item.getAttribute("localType") === "in-keeping:repository")
       : direct(identification[0], "repository");
@@ -920,7 +941,7 @@ function eadImport(document: Document, digest: string): { schema: ArchiveSchema;
     if (depth > MAX_DEPTH || units.length >= MAX_UNITS) throw new Error("EAD hierarchy exceeds its limits.");
     const suppliedId = clean(node.getAttribute("id") ?? "", 128);
     if (suppliedId && !safeId(suppliedId)) throw new Error("EAD component ID is unsafe.");
-    const referenceCode = unitText(node, profile, "reference") || suppliedId;
+    const referenceCode = unitText(node, profile, "reference");
     const generatedId = `ARCH-${digest.slice(0, 8)}-${units.length + 1}`;
     const id = suppliedId || (safeId(referenceCode) ? referenceCode : generatedId);
     if (ids.has(id)) throw new Error("EAD component IDs are duplicated.");
@@ -929,7 +950,7 @@ function eadImport(document: Document, digest: string): { schema: ArchiveSchema;
     if (!title) throw new Error("Every EAD description requires a title.");
 
     const unitValues: Record<string, ArchiveValue> = Object.create(null) as Record<string, ArchiveValue>;
-    unitValues.reference_code = referenceCode || id;
+    unitValues.reference_code = referenceCode;
     unitValues.title = title;
     assignArray(unitValues, "dates", unitTexts(node, profile, "dates"));
     assignArray(unitValues, "creator", unitTexts(node, profile, "creator"));
@@ -1254,6 +1275,10 @@ function validateArchiveValue(value: ArchiveValue, field: ArchiveField): void {
     if (typeof entry !== "string") throw new Error(`${field.label} must be text.`);
     const text = clean(entry, field.kind === "long-text" ? 8192 : 2048);
     if (!text || text !== entry) throw new Error(`${field.label} must be nonempty canonical Unicode text without surrounding whitespace or CR line endings.`);
+    if (field.kind === "identifier") {
+      assertIdentityText(text, field.label);
+      if (/\r|\n/.test(text)) throw new Error(`${field.label} cannot contain line breaks.`);
+    }
     if (field.repeatable && text.includes("\n")) throw new Error(`${field.label} values cannot contain line breaks; use one value per line.`);
     if (field.kind === "date" && text && !calendarDate(text)) throw new Error(`${field.label} must use a valid YYYY-MM-DD date.`);
     if (field.kind === "date-time" && text) isoInstant(text, field.label);
@@ -1372,7 +1397,9 @@ function csvRows(text: string): string[][] {
   let afterQuote = false;
   const pushCell = () => {
     if (row.length >= 256) throw new Error("CSV exceeds 256 columns.");
-    row.push(unprotectSpreadsheetCell(value));
+    const restored = unprotectSpreadsheetCell(value);
+    if (restored.state === "active-risk") throw new Error("CSV contains an unprotected spreadsheet-formula-like cell. Preserve the leading protection apostrophe or use a non-tabular format.");
+    row.push(restored.value);
     value = "";
   };
   const pushRow = () => {
@@ -1606,14 +1633,8 @@ function xmlId(value: string): string {
 function xml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]!); }
 
 function csv(value: string): string {
-  const safe = /^\s*'*[=+@-]/.test(value) ? `'${value}` : value;
+  const safe = protectSpreadsheetCell(value);
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-}
-
-function unprotectSpreadsheetCell(value: string): string {
-  if (!value.startsWith("'")) return value;
-  const restored = value.slice(1);
-  return /^\s*'*[=+@-]/.test(restored) ? restored : value;
 }
 
 function encodeCsvList(list: string[]): string {

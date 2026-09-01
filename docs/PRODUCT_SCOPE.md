@@ -44,7 +44,7 @@ The application is designed for legitimate work. It is not a game, role-play env
 7. Record incidents, evidence, notes, ownership, state, and required next action.
 8. Change configuration or restore retained state by creating a new revision.
 9. Save, reopen, duplicate, rename, recover, or delete named browser-local workspaces.
-10. Produce diagnostic Technical Reports, plaintext workspace backups, and continuity receipts with explicit limits; produce ordinary lossless packages, receiving-system crosswalks, operational Markdown, service exports, and Public Notices only through the named-save, continuity, evidence, integrity, and click-time freshness gates.
+10. Produce diagnostic Technical Reports, plaintext workspace backups, unsigned continuity receipts, signed-witness requests, recovery-transition reviews, and interoperability evidence records with explicit limits; produce ordinary lossless packages, receiving-system crosswalks, operational Markdown, service exports, and Public Notices only through the named-save, signed-continuity, evidence, integrity, and final activation gates.
 
 ## Non-goals
 
@@ -72,7 +72,7 @@ Input over cardinality, malformed tagged lines, namespace-confused XML, unsuppor
 
 ### Operator action is the state boundary
 
-Opening the application creates only a blank working copy. Imports and reviewed backups require a complete explicit disposition with no default; only `admit-unverified` permits Apply or Open. Persistence requires a named-workspace create/save. Ordinary outward downloads require a named clean save and a click-time lease that reopens the exact saved generation and rechecks it immediately before activation. Technical Reports, plaintext backups, and continuity receipts remain deliberately available for bounded diagnosis, recovery, and comparison. Public Notice generation uses an explicit fixed projection.
+Opening the application creates only a blank working copy. Imports and reviewed backups require a complete explicit disposition with no default; only `admit-unverified` permits Apply or Open. Persistence requires a named-workspace create/save. Ordinary outward downloads require a named clean save, an exact signed witness terminal under a separately obtained current policy digest, and a single-use lease whose final saved-state check and synchronous browser activation request share one readonly IndexedDB transaction. Technical Reports, plaintext backups, unsigned receipts, witness requests, and non-activating recovery reviews remain deliberately available for bounded diagnosis, recovery, and comparison. Public Notice generation uses an explicit fixed projection.
 
 Withdrawal records that an earlier claim should no longer support use; it does not remove or validate the content that claim described. Retained affected content remains diagnostic-only until a governed revision removes or supersedes it. The current product has no local verified/trusted evidence state, so external corroboration cannot be represented as a self-issued authority upgrade.
 
@@ -111,5 +111,8 @@ A release is successful when:
 | Audit event | Linked event record with action/outcome and, for current events, complete non-audit state digest |
 | Workspace backup | Plaintext JSON recovery envelope containing the complete bounded workspace serialization but excluding the separately stored continuity checkpoint; review/Open requires an outer unverified disposition and does not prove nested evidence authenticity or completeness |
 | Continuity receipt | Comparison metadata for a separately stored local checkpoint; not a workspace backup, trusted timestamp, signature, or authenticity proof |
+| External continuity witness | P-256 signed, exact-checkpoint statement in a verified linear witness set; a match under the separately supplied policy digest proves scoped correspondence only, not evidence truth, completeness, custody, trusted time, signer authority, or institutional approval |
+| Recovery-transition review | Exact, non-activating record of a reviewed backup and supplied continuity material; always requires a new destination lineage and does not prove clean-device recovery or persistence |
+| Recorded interoperability pass | Internally complete operator evidence for an exact receiver profile, fixture, build, and commit; not named-product certification or institutional acceptance |
 | Post-run notebook HTML | Deterministic static HTML report styled after a Jupyter output document; not executable `.ipynb` content |
 | Public projection | New allowlisted public object constructed from incident categories, not a redacted private object |

@@ -1,4 +1,5 @@
 import { reviewPublicHttpsUrl } from "./public-url.ts";
+import { protectSpreadsheetCell } from "./spreadsheet-safety.ts";
 
 export type ServiceArea =
   | "collections"
@@ -467,6 +468,6 @@ function plainObject(value: unknown): value is Record<string, ServiceValue> {
 function scalar(value: string | boolean | number): string { return typeof value === "string" ? value : String(value); }
 
 function csv(value: string): string {
-  const safe = /^[=+@-]/.test(value.trimStart()) ? `'${value}` : value;
+  const safe = protectSpreadsheetCell(value);
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }

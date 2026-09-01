@@ -10,6 +10,15 @@ import {
   type ContinuityAnchor,
   type ContinuityVerification,
 } from "./continuity-anchor.ts";
+import {
+  createContinuityWitness,
+  formatContinuityWitness,
+  parseContinuityTrustPolicy,
+  parseSignedContinuityWitnessSet,
+  verifyExternalContinuity,
+  type ExternalContinuityVerification,
+} from "./external-continuity.ts";
+import { activateBrowserFile, isBrowserFile, readBrowserFileBytes, type BrowserFileDisposition } from "./browser-file-activation.ts";
 
 // The durable database name is intentionally retained across the product rename so
 // existing browser-local work is not stranded.
@@ -71,6 +80,26 @@ export type LocalWorkspaceOpen = {
   recoveredFromPrevious: boolean;
   openedGeneration: number;
   continuity: ContinuityVerification;
+  externalContinuity: ExternalContinuityVerification;
+  continuityAnchor: ContinuityAnchor | null;
+};
+
+export type LocalExternalContinuityInput = {
+  signedWitnessSet: string;
+  trustPolicy: string;
+  expectedPolicyDigest: string;
+  originScope: string;
+};
+
+export type LocalWorkspaceActivationExpectation = {
+  id: string;
+  token: string;
+  generation: number;
+  payloadDigest: string;
+  anchorDigest: string;
+  artifactSha256: string;
+  workspace: Workspace;
+  continuityAnchor: ContinuityAnchor;
 };
 
 export type LocalContinuityAcceptanceInput = Omit<ContinuityAcceptance, "browserTime" | "acknowledgment"> & {
@@ -334,11 +363,34 @@ export async function makeLocalContinuityReceipt(id: string, expectedToken: stri
   return formatContinuityReceipt(await validateContinuityAnchor(anchor));
 }
 
+export async function makeLocalContinuityWitness(id: string, expectedToken: string, originScope: string): Promise<string> {
+  validateWorkspaceId(id);
+  await ensureLegacyMigration();
+  const db = await openDatabase();
+  try {
+    const bundle = await readWorkspaceBundle(db, id);
+    const manifest = bundle.manifest;
+    if (!manifest || !validManifestShape(manifest) || manifest.token !== expectedToken) throw new Error("The named saved workspace changed. Reopen it before creating a continuity witness request.");
+    const verified = await verifyGeneration(bundle.active, manifest.payloadDigest);
+    if (verified.status !== "verified" || !activeManifestMetadataMatches(manifest, bundle.active, verified.workspace)) throw new Error("The exact active saved generation does not verify.");
+    if (!bundle.anchor) throw new Error("The exact active saved generation has no local continuity checkpoint.");
+    const continuity = await verifyContinuityAnchor(bundle.anchor, { workspace: verified.workspace, workspaceId: id, lineageId: bundle.anchor.lineageId, generation: manifest.activeGeneration, payloadDigest: manifest.payloadDigest });
+    if (continuity.status !== "continuity-verified-local") throw new Error(`The local continuity checkpoint does not match. ${continuity.reason}`);
+    return formatContinuityWitness(await createContinuityWitness(bundle.anchor, originScope, new Date().toISOString()));
+  } finally { db.close(); }
+}
+
 export async function corroborateLocalContinuityReceipt(id: string, expectedToken: string, serializedReceipt: string): Promise<ContinuityVerification> {
   const { opened } = await openLocalWorkspaceWithAnchor(id, serializedReceipt);
   if (opened.token !== expectedToken || opened.recoveredFromPrevious) throw new Error("The named saved workspace changed or required recovery. Reopen it before comparing an independent continuity receipt.");
   if (opened.continuity.status !== "continuity-corroborated") throw new Error(`The independent continuity receipt did not corroborate this exact saved generation. ${opened.continuity.reason}`);
   return opened.continuity;
+}
+
+export async function verifyLocalExternalContinuity(id: string, expectedToken: string, input: LocalExternalContinuityInput): Promise<ExternalContinuityVerification> {
+  const opened = await openLocalWorkspace(id, null, input);
+  if (opened.token !== expectedToken || opened.recoveredFromPrevious) throw new Error("The named saved workspace changed or required recovery. Reopen it before verifying external continuity evidence.");
+  return opened.externalContinuity;
 }
 
 export async function saveLocalWorkspace(id: string, workspace: Workspace, expectedToken: string): Promise<LocalWorkspaceManifest> {
@@ -352,11 +404,11 @@ export async function saveRecoveredLocalWorkspace(id: string, workspace: Workspa
   return writeWorkspace(id, workspace, expectedToken, false, recoveredGeneration);
 }
 
-export async function openLocalWorkspace(id: string, independentReceipt: string | null = null): Promise<LocalWorkspaceOpen> {
-  return (await openLocalWorkspaceWithAnchor(id, independentReceipt)).opened;
+export async function openLocalWorkspace(id: string, independentReceipt: string | null = null, externalInput: LocalExternalContinuityInput | null = null): Promise<LocalWorkspaceOpen> {
+  return (await openLocalWorkspaceWithAnchor(id, independentReceipt, externalInput)).opened;
 }
 
-async function openLocalWorkspaceWithAnchor(id: string, independentReceipt: string | null): Promise<{ opened: LocalWorkspaceOpen; anchor: ContinuityAnchor | null }> {
+async function openLocalWorkspaceWithAnchor(id: string, independentReceipt: string | null, externalInput: LocalExternalContinuityInput | null = null): Promise<{ opened: LocalWorkspaceOpen; anchor: ContinuityAnchor | null }> {
   validateWorkspaceId(id);
   await ensureLegacyMigration();
   const db = await openDatabase();
@@ -369,7 +421,8 @@ async function openLocalWorkspaceWithAnchor(id: string, independentReceipt: stri
     if (opened.status === "verified") {
       if (!activeManifestMetadataMatches(manifest, active, opened.workspace)) throw new Error("Workspace integrity verification stopped because manifest display metadata disagrees with the verified active generation. Inspect quarantined storage before continuing.");
       const continuity = await continuityForOpenedGeneration(bundle.anchor, id, opened.workspace, manifest.activeGeneration, manifest.payloadDigest, independentReceipt);
-      return { opened: { workspace: opened.workspace, manifest, token: manifest.token, recoveredFromPrevious: false, openedGeneration: manifest.activeGeneration, continuity }, anchor: bundle.anchor ?? null };
+      const externalContinuity = await externalContinuityForAnchor(bundle.anchor, externalInput);
+      return { opened: { workspace: opened.workspace, manifest, token: manifest.token, recoveredFromPrevious: false, openedGeneration: manifest.activeGeneration, continuity, externalContinuity, continuityAnchor: bundle.anchor ? await validateContinuityAnchor(bundle.anchor).catch(() => null) : null }, anchor: bundle.anchor ?? null };
     }
     if (opened.status === "digest-disagreement") throw new Error("Workspace integrity verification stopped because the active generation and its manifest digest disagree. No fallback generation was opened.");
     if (manifest.previousGeneration !== null) {
@@ -378,20 +431,108 @@ async function openLocalWorkspaceWithAnchor(id: string, independentReceipt: stri
       const recovered = await verifyGeneration(previous, manifest.previousPayloadDigest);
       if (recovered.status === "verified" && previous) {
         const continuity = await continuityForOpenedGeneration(bundle.anchor, id, recovered.workspace, manifest.previousGeneration, manifest.previousPayloadDigest, independentReceipt);
-        return { opened: { workspace: recovered.workspace, manifest: openedGenerationManifest(manifest, previous, recovered.workspace), token: manifest.token, recoveredFromPrevious: true, openedGeneration: manifest.previousGeneration, continuity }, anchor: bundle.anchor ?? null };
+        const externalContinuity = await externalContinuityForAnchor(bundle.anchor, externalInput);
+        return { opened: { workspace: recovered.workspace, manifest: openedGenerationManifest(manifest, previous, recovered.workspace), token: manifest.token, recoveredFromPrevious: true, openedGeneration: manifest.previousGeneration, continuity, externalContinuity, continuityAnchor: bundle.anchor ? await validateContinuityAnchor(bundle.anchor).catch(() => null) : null }, anchor: bundle.anchor ?? null };
       }
     }
     throw new Error("Workspace integrity verification failed. No verified local generation is available.");
   } finally { db.close(); }
 }
 
-export async function openContinuityVerifiedWorkspace(id: string, independentReceipt: string | null = null): Promise<LocalWorkspaceOpen> {
-  const opened = await openLocalWorkspace(id, independentReceipt);
+export async function openContinuityVerifiedWorkspace(id: string, independentReceipt: string | null = null, externalInput: LocalExternalContinuityInput | null = null): Promise<LocalWorkspaceOpen> {
+  const opened = await openLocalWorkspace(id, independentReceipt, externalInput);
   if (opened.recoveredFromPrevious) throw new Error("The workspace opened from a recovery generation and cannot produce ordinary outward artifacts.");
-  if (opened.continuity.status !== "continuity-corroborated") {
-    throw new Error(`Independent continuity receipt corroboration is required before ordinary outward artifacts can be generated. ${opened.continuity.reason}`);
+  if (opened.continuity.status !== "continuity-verified-local" && opened.continuity.status !== "continuity-corroborated") {
+    throw new Error(`The saved generation does not match its local continuity checkpoint. ${opened.continuity.reason}`);
+  }
+  if (opened.externalContinuity.status !== "trusted-match") {
+    throw new Error(`A signed witness chain under the supplied expected policy digest is required before ordinary outward artifacts can be generated. ${opened.externalContinuity.reason}`);
   }
   return opened;
+}
+
+/**
+ * Holds a readonly IndexedDB snapshot across the final synchronous browser
+ * activation. Earlier overlapping writes are observed; later writes to any of
+ * the three stores wait until the synchronous browser activation has returned.
+ *
+ * This proves only that exact bytes were offered to the browser while the
+ * named local state was fenced. It cannot prove that an OS save completed.
+ */
+export async function activateAgainstLocalWorkspace(
+  expected: LocalWorkspaceActivationExpectation,
+  file: File,
+  disposition: BrowserFileDisposition,
+): Promise<void> {
+  validateWorkspaceId(expected.id);
+  validateGenerationNumber(expected.generation);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(expected.token)) throw new Error("Artifact activation token is invalid.");
+  if (!/^[a-f0-9]{64}$/.test(expected.payloadDigest) || !/^[a-f0-9]{64}$/.test(expected.anchorDigest) || !/^[a-f0-9]{64}$/.test(expected.artifactSha256)) throw new Error("Artifact activation digest is invalid.");
+  if (!isBrowserFile(file)) throw new Error("Artifact activation requires an immutable File.");
+  if (disposition !== "download" && disposition !== "open") throw new Error("Artifact activation disposition is unsupported.");
+  const identity = {
+    id: expected.id,
+    token: expected.token,
+    generation: expected.generation,
+    payloadDigest: expected.payloadDigest,
+    anchorDigest: expected.anchorDigest,
+    artifactSha256: expected.artifactSha256,
+  } as const;
+  const expectedWorkspace = boundedWorkspaceSerialization(expected.workspace);
+  const expectedAnchorValue = structuredClone(expected.continuityAnchor);
+  const artifactFile = file;
+  const artifactDisposition = disposition;
+  const validatedAnchor = await validateContinuityAnchor(expectedAnchorValue);
+  if (validatedAnchor.digest !== identity.anchorDigest || validatedAnchor.workspaceId !== identity.id) throw new Error("Artifact activation continuity identity is inconsistent.");
+  const expectedAnchor = JSON.stringify(validatedAnchor);
+
+  await ensureLegacyMigration();
+  const db = await openDatabase();
+  try {
+    let actualArtifactSha256: string;
+    try {
+      actualArtifactSha256 = await sha256Bytes(await readBrowserFileBytes(artifactFile));
+    } catch {
+      throw new Error("The prepared artifact bytes could not be verified before final activation.");
+    }
+    if (actualArtifactSha256 !== identity.artifactSha256) throw new Error("The prepared artifact bytes changed before final activation.");
+    await completeTransaction<void>(db, [MANIFEST_STORE, GENERATION_STORE, CONTINUITY_STORE], "readonly", (transaction, resolve, reject) => {
+      const manifestRequest = transaction.objectStore(MANIFEST_STORE).get(identity.id);
+      const generationRequest = transaction.objectStore(GENERATION_STORE).get([identity.id, identity.generation]);
+      const anchorRequest = transaction.objectStore(CONTINUITY_STORE).get(identity.id);
+      let remaining = 3;
+      const fail = (message: string) => reject(new Error(message));
+      const ready = () => {
+        remaining -= 1;
+        if (remaining !== 0) return;
+        try {
+          const manifest = manifestRequest.result as LocalWorkspaceManifest | undefined;
+          const generation = generationRequest.result as StoredGeneration | undefined;
+          const anchor = anchorRequest.result as ContinuityAnchor | undefined;
+          if (!manifest || !validManifestShape(manifest)
+            || manifest.id !== identity.id
+            || manifest.token !== identity.token
+            || manifest.activeGeneration !== identity.generation
+            || manifest.payloadDigest !== identity.payloadDigest) return fail("The named saved workspace changed before artifact activation.");
+          if (!generation
+            || generation.workspaceId !== identity.id
+            || generation.generation !== identity.generation
+            || generation.payloadDigest !== identity.payloadDigest
+            || !activeManifestMetadataMatches(manifest, generation, generation.payload)
+            || boundedWorkspaceSerialization(generation.payload) !== expectedWorkspace) return fail("The exact saved generation changed before artifact activation.");
+          if (!anchor || anchor.digest !== identity.anchorDigest || JSON.stringify(anchor) !== expectedAnchor) return fail("The continuity checkpoint changed before artifact activation.");
+          activateBrowserFile(artifactFile, artifactDisposition);
+          resolve(undefined);
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error("Artifact activation failed safely."));
+        }
+      };
+      for (const request of [manifestRequest, generationRequest, anchorRequest]) {
+        request.onsuccess = ready;
+        request.onerror = () => reject(storageError(request.error));
+      }
+    });
+  } finally { db.close(); }
 }
 
 export async function deleteLocalWorkspace(id: string, expectedToken?: string): Promise<void> {
@@ -673,6 +814,25 @@ async function continuityForOpenedGeneration(
     payloadDigest,
     independentReceipt,
   });
+}
+
+async function externalContinuityForAnchor(
+  anchor: ContinuityAnchor | undefined,
+  input: LocalExternalContinuityInput | null,
+): Promise<ExternalContinuityVerification> {
+  if (!anchor) return { status: "indeterminate", reason: "No local continuity checkpoint exists for comparison.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
+  if (!input) return { status: "policy-pin-missing", reason: "No signed witness set, policy, and separately obtained current policy digest were supplied.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
+  try {
+    return verifyExternalContinuity(
+      anchor,
+      parseSignedContinuityWitnessSet(input.signedWitnessSet),
+      parseContinuityTrustPolicy(input.trustPolicy),
+      input.originScope,
+      input.expectedPolicyDigest,
+    );
+  } catch (error) {
+    return { status: "indeterminate", reason: error instanceof Error ? error.message : "External continuity verification failed.", witnessDigest: null, policyId: null, policyRevision: null, policyDigest: null, topology: null };
+  }
 }
 
 async function verifiedRecoveryCandidate(value: StoredGeneration | undefined, workspaceId: string, generation: number): Promise<LocalWorkspaceRecoveryCandidate | null> {
@@ -1061,6 +1221,10 @@ function storageError(error: DOMException | null): Error {
 }
 
 async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return sha256Bytes(new TextEncoder().encode(value));
+}
+
+async function sha256Bytes(value: BufferSource): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

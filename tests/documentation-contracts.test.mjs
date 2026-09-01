@@ -142,7 +142,7 @@ test("repository licensing and red-team evidence do not make contradictory autho
   assert.match(register, /Focused verified.*not the complete engineering suite/is);
   assert.match(register, /RT-AUTH-001.*recomputing hashes.*wholesale record\/history replacement/is);
   assert.match(register, /RT-SEM-001.*operator-admitted-unverified/is);
-  assert.match(register, /RT-FRESH-001.*reopens.*rechecks/is);
+  assert.match(register, /RT-FRESH-001.*single-use.*RT-FRESH-003 fence/is);
   assert.doesNotMatch(register, /RT-PARSE-00[1-5]\s*\|\s*\*\*Open/i);
   assert.match(historicalValidation, /Historical candidate-specific evidence.*not current working-tree proof/is);
   assert.match(historicalValidation, /139 tests, 139 passed/);
@@ -158,9 +158,12 @@ test("governing docs preserve continuity, evidence, and click-time trust boundar
   assert.match(dataModel, /in-keeping\/evidence-application-outcome/);
   assert.match(dataModel, /resultingRevisionId.*resultingRevisionDigest/is);
   assert.match(security, /unsigned exact-checkpoint receipt/i);
-  assert.match(security, /ordinary output requires the exact current receipt.*continuity-corroborated/is);
+  assert.match(security, /For ordinary output.*requires a bounded `in-keeping\/signed-continuity-witness-set`/is);
+  assert.match(security, /requires the exact current policy SHA-256 obtained through a separate institutional trust channel/i);
+  assert.match(security, /trust-policy JSON cannot authorize itself/i);
   assert.match(architecture, /reset ledger.*cannot advance the same anchor/i);
   assert.match(security, /no local state is named trusted, verified, authenticated, or authoritative/i);
-  assert.match(security, /reopens\/rechecks the complete fingerprint(?: and same receipt)? immediately before synchronous Blob\/anchor activation/i);
-  assert.match(security, /file activation cannot be one atomic transaction/i);
+  assert.match(security, /constructs an immutable `File`.*repeats the complete saved-state.*artifact-snapshot checks/is);
+  assert.match(security, /readonly IndexedDB transaction over the manifest, generation, and continuity-anchor stores.*synchronous browser open\/download request/is);
+  assert.match(security, /does not make browser or operating-system persistence part of the IndexedDB transaction/i);
 });

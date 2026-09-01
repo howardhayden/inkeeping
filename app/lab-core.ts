@@ -4,10 +4,13 @@ import { reviewPublicHttpsUrl } from "./public-url.ts";
 import { assertSafeJsonText } from "./json-safety.ts";
 import { assertIdentityText, containsUnicodeFormatControl } from "./identity-safety.ts";
 import { assertSafeXmlText, assertXmlElementNamespaces } from "./xml-safety.ts";
+import { unprotectSpreadsheetCell } from "./spreadsheet-safety.ts";
 import {
   canonicalDigest as canonicalEvidenceDigest,
   createEvidenceApplicationRecord,
   createEvidenceAuthorityRecord,
+  createEvidenceWarningManifest,
+  MAX_EVIDENCE_WARNINGS,
   validateEvidenceApplicationLink,
   validateEvidenceApplicationRecord,
   validateEvidenceAuthorityRecord,
@@ -697,13 +700,19 @@ export function checkRecords(records: CatalogRecord[], maximum = Number.POSITIVE
     if (record.availability === "Available" && !record.requestable && record.location !== "Online") addFinding(findings, "warning", "REQUEST_MISMATCH", record.id, "Available item is not requestable", "Trace item status, location, patron context, and request policy.");
     if (record.format === "Video" && record.source.trace["336$b"] === "txt" && record.source.trace["338$b"] === "cr") addFinding(findings, "warning", "FORMAT_CONFLICT", record.id, "Format conflicts with RDA fields", "Prefer controlled content, media, and carrier fields over the local code.");
 
+    const seenIdentifierKeys = new Set<string>();
     for (const identifier of record.identifiers) {
       const normalized = normalizeIdentifier(identifier);
-      const key = `${identifier.scheme}:${normalized}`;
-      ids.set(key, [...(ids.get(key) ?? []), record.id]);
+      const exactKey = `${identifier.scheme}:${normalized}`;
+      if (seenIdentifierKeys.has(exactKey)) addFinding(findings, "error", "IDENTIFIER_DUPLICATE", record.id, "Duplicate stable identifier", `${exactKey} is repeated within the record.`);
+      seenIdentifierKeys.add(exactKey);
       if (identifier.scheme === "isbn" && !validIsbn(normalized)) addFinding(findings, "warning", "ISBN_INVALID", record.id, "ISBN checksum fails", identifier.value);
       if (identifier.scheme === "doi" && !/^10\.\d{4,9}\/[\w.()/:;-]+$/i.test(normalized)) addFinding(findings, "warning", "DOI_INVALID", record.id, "DOI is malformed", identifier.value);
     }
+
+    const doiClaims = stableDoiClaims(record);
+    if (doiClaims.size > 1) addFinding(findings, "warning", "IDENTITY_CARRIER_CONFLICT", record.id, "Contradictory DOI identity carriers", `The record asserts ${[...doiClaims].sort().join(", ")} across typed identifiers, URI identifiers, or DOI resolver links.`);
+    for (const key of stableIdentityClaims(record)) ids.set(key, [...(ids.get(key) ?? []), record.id]);
 
     for (const link of record.links) {
       const result = validatePublicUrl(link);
@@ -831,7 +840,10 @@ export async function reviewImport(file: File): Promise<ImportReview> {
   } catch (error) {
     shapeFinding = { id: "IMPORT_SHAPE_INVALID", severity: "error", code: "SHAPE_INVALID", label: "Record shape exceeds the import contract", detail: safeError(error) };
   }
-  const allFindings = shapeFinding ? [...evaluatedFindings, shapeFinding] : evaluatedFindings;
+  const structuralFindings = shapeFinding ? [...evaluatedFindings, shapeFinding] : evaluatedFindings;
+  const allFindings = structuralFindings.length > MAX_EVIDENCE_WARNINGS - 1
+    ? [...structuralFindings, { id: "EVIDENCE_WARNING_CAPACITY", severity: "error" as const, code: "WARNING_CAPACITY_EXCEEDED", label: "Complete warning manifest exceeds capacity", detail: `The review produced ${structuralFindings.length.toLocaleString("en-US")} findings; at most ${(MAX_EVIDENCE_WARNINGS - 1).toLocaleString("en-US")} can be retained alongside the mandatory authority warning without omission.` }]
+    : structuralFindings;
   base.findings = [...allFindings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
   base.blocked = base.records.length === 0 || allFindings.some((finding) => finding.severity === "error");
   base.summary = base.records.length === 0
@@ -862,9 +874,14 @@ export async function applyImport(workspace: Workspace, review: ImportReview, di
   if (review.blocked || review.records.length === 0 || !trustedRecords) {
     return appendAudit(workspace, "Reject import", sourceTarget, "rejected");
   }
+  const parserProfile = `catalog-${review.format}-v1`;
+  const warningManifest = await createEvidenceWarningManifest(review.digest, parserProfile, [
+    ...review.findings.map((finding) => ({ severity: finding.severity, code: finding.code, entityId: finding.recordId ?? null, label: finding.label, detail: finding.detail, occurrenceKey: finding.id })),
+    { severity: "warning", code: "STRUCTURE_ONLY_AUTHORITY_UNVERIFIED", entityId: null, label: "Structural review is not authority", detail: "Parser success and internal consistency do not establish origin, custody, completeness, or truth.", occurrenceKey: "semantic-authority-boundary" },
+  ]);
   const authorityRecord = await createEvidenceAuthorityRecord({
     source: { kind: "catalog-import", filename: review.filename, format: review.format, bytes: review.bytes, sha256: review.digest },
-    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest(review.records), parserProfile: `catalog-${review.format}-v1` },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest(review.records), parserProfile, warningManifest },
     scope: { kind: "catalog-records", entityIds: review.records.map((record) => record.id) },
   }, disposition);
   const authorityTarget = `evidence:${authorityRecord.recordSha256} · source:${review.digest}`;
@@ -905,8 +922,8 @@ export async function applyImport(workspace: Workspace, review: ImportReview, di
       resultingRevisionDigest: null,
     }, "Reject conflicting import", authorityTarget, "rejected");
   }
-  const existingIdentifiers = new Set(current.records.flatMap((record) => record.identifiers.map((identifier) => `${identifier.scheme}:${normalizeIdentifier(identifier)}`)));
-  const identifierConflict = review.records.some((record) => record.identifiers.some((identifier) => existingIdentifiers.has(`${identifier.scheme}:${normalizeIdentifier(identifier)}`)));
+  const existingIdentifiers = new Set(current.records.flatMap(stableIdentityClaims));
+  const identifierConflict = review.records.some((record) => stableIdentityClaims(record).some((identifier) => existingIdentifiers.has(identifier)));
   if (identifierConflict) {
     return appendEvidenceDecisionOutcome(workspace, authorityRecord, {
       outcome: "not-applied",
@@ -1067,9 +1084,13 @@ export async function applyArchiveImport(workspace: Workspace, source: ArchiveIm
   if (!schema || source.blocked || !(await verifyArchiveImportReviewBinding(source))) throw new Error("Archival import review binding is missing or changed; review the source file again.");
   validateArchiveSet([schema], importedUnits);
   if (!trustedReviewedSource(source) || source.format === "unknown") throw new Error("Archival import provenance is invalid or incomplete.");
+  const parserProfile = `archive-${source.format}-v1`;
+  const warningManifest = await createEvidenceWarningManifest(source.digest, parserProfile, [{
+    severity: "warning", code: "STRUCTURE_ONLY_AUTHORITY_UNVERIFIED", entityId: null, label: "Structural review is not authority", detail: "Parser success and internal consistency do not establish origin, custody, completeness, or truth.", occurrenceKey: "semantic-authority-boundary",
+  }]);
   const authorityRecord = await createEvidenceAuthorityRecord({
     source: { kind: "archive-import", filename: source.filename, format: source.format, bytes: source.bytes, sha256: source.digest },
-    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest({ schema, units: importedUnits }), parserProfile: `archive-${source.format}-v1` },
+    review: { structuralStatus: "passed", canonicalPayloadSha256: await canonicalEvidenceDigest({ schema, units: importedUnits }), parserProfile, warningManifest },
     scope: { kind: "archive-records", entityIds: [...new Set([`schema:${schema.id}`, ...importedUnits.map((unit) => unit.id)])] },
   }, disposition);
   const authorityTarget = `evidence:${authorityRecord.recordSha256} · source:${source.digest}`;
@@ -2429,7 +2450,10 @@ function parseMarcText(text: string, label: string, digest: string): CatalogReco
         if ((field.subfields.get("a")?.length ?? 0) > 1) throw new Error(`MARC mnemonic record ${index + 1} ${tag} contains repeated nonrepeatable $a within one field.`);
         if (tag === "024" && (field.subfields.get("2")?.length ?? 0) > 1) throw new Error(`MARC mnemonic record ${index + 1} 024 contains repeated nonrepeatable $2 within one field.`);
         for (const value of field.subfields.get("a") ?? []) assertIdentityText(value, `MARC mnemonic record ${index + 1} ${tag} $a`);
-        if (tag === "024") for (const value of field.subfields.get("2") ?? []) assertIdentityText(value, `MARC mnemonic record ${index + 1} 024 $2`);
+        if (tag === "024") {
+          for (const value of field.subfields.get("2") ?? []) assertIdentityText(value, `MARC mnemonic record ${index + 1} 024 $2`);
+          marc024Scheme(field.indicators[0], field.indicators[1], field.subfields.get("2")?.[0] ?? "", `MARC mnemonic record ${index + 1} 024`);
+        }
       }
     }
     const leader = control("LDR");
@@ -2437,9 +2461,9 @@ function parseMarcText(text: string, label: string, digest: string): CatalogReco
     const links = values("856", "u");
     const additionalNames = ["700", "720"].flatMap((tag) => fields(tag)).map((field) => ({ name: field.subfields.get("a")?.[0] ?? "", role: (field.subfields.get("e")?.[0] ?? "").toLowerCase() })).filter((entry) => entry.name);
     const identifiers: Identifier[] = [
-      ...values("020", "a").map((value) => ({ scheme: "isbn" as const, value })),
+      ...values("020", "a").map((value) => ({ scheme: "isbn" as const, value: marc020IdentifierValue(value) })),
       ...values("022", "a").map((value) => ({ scheme: "issn" as const, value })),
-      ...fields("024").flatMap((field) => (field.subfields.get("a") ?? []).map((value) => ({ scheme: identifierScheme(field.subfields.get("2")?.[0] || (value.startsWith("10.") ? "doi" : "local")), value }))),
+      ...fields("024").flatMap((field) => (field.subfields.get("a") ?? []).map((value) => ({ scheme: marc024Scheme(field.indicators[0], field.indicators[1], field.subfields.get("2")?.[0] ?? "", `MARC mnemonic record ${index + 1} 024`), value }))),
     ];
     const title = fields("245").flatMap((field) => field.entries.filter((entry) => entry.code === "a" || entry.code === "b").map((entry) => entry.value)).join(" ");
     const declaredFormats = fields("655")
@@ -2729,6 +2753,8 @@ function parseMarcXml(document: Document, label: string, digest: string): Catalo
       if (tag === "024") {
         directSubfields.filter((child) => child.getAttribute("code") === "2")
           .forEach((child) => assertIdentityText(child.textContent ?? "", `MARC record ${index + 1} 024 $2`));
+        const sourceCode = directSubfields.find((child) => child.getAttribute("code") === "2")?.textContent ?? "";
+        marc024Scheme(field.getAttribute("ind1") ?? "", field.getAttribute("ind2") ?? "", sourceCode, `MARC record ${index + 1} 024`);
       }
     }
     const control = (tag: string) => controlFields.find((node) => node.getAttribute("tag") === tag)?.textContent?.trim() ?? "";
@@ -2736,11 +2762,12 @@ function parseMarcXml(document: Document, label: string, digest: string): Catalo
     const title = fields.filter((field) => field.getAttribute("tag") === "245").flatMap((field) => directElements(field, MARCXML_NS, "subfield").filter((node) => ["a", "b"].includes(node.getAttribute("code") ?? "")).map((node) => cleanText(node.textContent ?? "", 8192))).filter(Boolean).join(" ").replace(/\s*[/:;]\s*$/, "").trim();
     const id = control("001") || `MARC-${digest.slice(0, 12)}-${index + 1}`;
     const identifiers: Identifier[] = [
-      ...values("020", "a").map((value) => ({ scheme: "isbn" as const, value: value.split(/\s/)[0] })),
+      ...values("020", "a").map((value) => ({ scheme: "isbn" as const, value: marc020IdentifierValue(value) })),
       ...values("022", "a").map((value) => ({ scheme: "issn" as const, value })),
       ...fields.filter((field) => field.getAttribute("tag") === "024").flatMap((field) => {
-        const scheme = directElements(field, MARCXML_NS, "subfield").find((node) => node.getAttribute("code") === "2")?.textContent ?? "";
-        return directElements(field, MARCXML_NS, "subfield").filter((node) => node.getAttribute("code") === "a").map((node) => cleanText(node.textContent ?? "", 256)).map((value) => ({ scheme: identifierScheme(scheme || (value.startsWith("10.") ? "doi" : "local")), value }));
+        const sourceCode = directElements(field, MARCXML_NS, "subfield").find((node) => node.getAttribute("code") === "2")?.textContent ?? "";
+        const scheme = marc024Scheme(field.getAttribute("ind1") ?? "", field.getAttribute("ind2") ?? "", sourceCode, `MARC record ${index + 1} 024`);
+        return directElements(field, MARCXML_NS, "subfield").filter((node) => node.getAttribute("code") === "a").map((node) => cleanText(node.textContent ?? "", 256)).map((value) => ({ scheme, value }));
       }),
     ];
     const trace = {
@@ -3173,13 +3200,15 @@ function strictBoolText(value: string | undefined, field: string, fallback: bool
 }
 
 function decodeVersionedTabularCell(value: string, delimiter: "," | "\t"): string {
-  let decoded = value;
-  if (decoded.startsWith("'") && /^'*(?:[=+@-])/.test(decoded.slice(1).trimStart())) decoded = decoded.slice(1);
-  if (delimiter !== "\t") return decoded;
+  if (delimiter !== "\t") {
+    const restored = unprotectSpreadsheetCell(value);
+    if (restored.state === "active-risk") throw new Error("Versioned CSV contains an unprotected spreadsheet-formula-like cell.");
+    return restored.value;
+  }
   let output = "";
-  for (let index = 0; index < decoded.length; index += 1) {
-    if (decoded[index] !== "\\") { output += decoded[index]; continue; }
-    const escaped = decoded[index + 1];
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "\\") { output += value[index]; continue; }
+    const escaped = value[index + 1];
     if (escaped === undefined) throw new Error("Versioned TSV contains a trailing escape character.");
     if (escaped === "\\") output += "\\";
     else if (escaped === "n") output += "\n";
@@ -3188,7 +3217,9 @@ function decodeVersionedTabularCell(value: string, delimiter: "," | "\t"): strin
     else throw new Error(`Versioned TSV contains an unsupported \\${escaped} escape.`);
     index += 1;
   }
-  return output;
+  const restored = unprotectSpreadsheetCell(output);
+  if (restored.state === "active-risk") throw new Error("Versioned TSV contains an unprotected spreadsheet-formula-like cell.");
+  return restored.value;
 }
 
 function parseVersionedTabularList(value: string | undefined, field: string): string[] {
@@ -3209,9 +3240,25 @@ function parseVersionedTabularIdentifiers(value: string | undefined): Identifier
 }
 
 function identifierScheme(value: string): Identifier["scheme"] {
-  const key = value.toLowerCase().replace(/[^a-z]/g, "");
+  const key = value.trim().toLowerCase();
   if (["doi", "isbn", "issn", "oclc", "lccn", "orcid", "ismn", "upc", "uri"].includes(key)) return key as Identifier["scheme"];
   return "local";
+}
+
+function marc024Scheme(indicator1: string, indicator2: string, sourceCode: string, label: string): Identifier["scheme"] {
+  const first = indicator1 === " " || indicator1 === "#" ? "#" : indicator1;
+  const second = indicator2 === " " || indicator2 === "#" ? "#" : indicator2;
+  if (!new Set(["#", "0", "1", "2", "3", "4", "7", "8"]).has(first) || second !== "#") throw new Error(`${label} has unsupported indicators.`);
+  const source = sourceCode.trim();
+  if (first === "7" && !source) throw new Error(`${label} indicator 7 requires exactly one nonempty $2 source code.`);
+  if (first !== "7" && source) throw new Error(`${label} may carry $2 only when indicator 1 is 7.`);
+  if (first === "1") return "upc";
+  if (first === "2") return "ismn";
+  return first === "7" ? identifierScheme(source) : "local";
+}
+
+function marc020IdentifierValue(value: string): string {
+  return cleanText(value.replace(/\s+\([^()]*\)\s*$/, ""), 256);
 }
 
 function parseIdentifierList(value: string): Identifier[] {
@@ -3428,6 +3475,37 @@ function normalizeIdentifier(identifier: Identifier): string {
   return value;
 }
 
+export function stableIdentityClaims(record: Pick<CatalogRecord, "identifiers" | "links">): string[] {
+  const claims = new Set<string>();
+  for (const identifier of record.identifiers) {
+    const normalized = normalizeIdentifier(identifier);
+    if (normalized) claims.add(`${identifier.scheme}:${normalized}`);
+    const doi = identifier.scheme === "local" || identifier.scheme === "uri" ? doiFromCarrier(identifier.value) : null;
+    if (doi) claims.add(`doi:${doi}`);
+  }
+  for (const link of record.links) {
+    const doi = doiFromCarrier(link);
+    if (doi) claims.add(`doi:${doi}`);
+  }
+  return [...claims].sort();
+}
+
+function stableDoiClaims(record: Pick<CatalogRecord, "identifiers" | "links">): Set<string> {
+  return new Set(stableIdentityClaims(record).filter((claim) => claim.startsWith("doi:")).map((claim) => claim.slice(4)));
+}
+
+function doiFromCarrier(value: string): string | null {
+  const normalizedBare = normalizeIdentifier({ scheme: "doi", value });
+  if (/^10\.\d{4,9}\/[\w.()/:;-]+$/i.test(normalizedBare)) return normalizedBare;
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { return null; }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || !["doi.org", "dx.doi.org"].includes(parsed.hostname.toLowerCase())) return null;
+  let path: string;
+  try { path = decodeURIComponent(parsed.pathname.replace(/^\/+/, "")); } catch { return null; }
+  const normalized = normalizeIdentifier({ scheme: "doi", value: path });
+  return /^10\.\d{4,9}\/[\w.()/:;-]+$/i.test(normalized) ? normalized : null;
+}
+
 function validIsbn(value: string): boolean {
   if (/^\d{13}$/.test(value)) return [...value].reduce((sum, char, index) => sum + Number(char) * (index % 2 === 0 ? 1 : 3), 0) % 10 === 0;
   if (/^\d{9}[\dX]$/.test(value)) return [...value].reduce((sum, char, index) => sum + (char === "X" ? 10 : Number(char)) * (10 - index), 0) % 11 === 0;
@@ -3461,7 +3539,8 @@ function marcFormat(trace: Record<string, string>, genres: string[], declaredGen
 }
 
 function addFinding(findings: Finding[], severity: FindingSeverity, code: string, recordId: string | undefined, label: string, detail: string): void {
-  findings.push({ id: `${code}-${findings.length + 1}`, severity, code, recordId, label, detail });
+  const occurrence = findings.filter((item) => item.code === code && item.recordId === recordId && item.label === label && item.detail === detail).length + 1;
+  findings.push({ id: `${code}:${recordId ?? "workspace"}:${occurrence}`, severity, code, recordId, label, detail });
 }
 
 function severityRank(severity: FindingSeverity): number {
