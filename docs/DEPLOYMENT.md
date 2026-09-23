@@ -76,6 +76,11 @@ git diff --check
 git status --short
 ```
 
+The release gate begins with the repository licensing-policy check. It requires
+the commercial-baseline marker, aligned root/package/citation metadata, and the
+recorded historical and third-party notice hashes. A revision that fails this
+check is not deployable.
+
 `VITE_SITE_URL` must remain the exact final origin. `app/site-metadata.ts` rejects HTTP, credentials, explicit ports, paths, queries, and fragments. The value is compiled into canonical metadata, Open Graph metadata, `robots.txt`, and `sitemap.xml`; it is not a runtime switch.
 
 Dry runs and Sites checkpoints may be built with a nonproduction placeholder because they are not promoted to the Cloudflare production origin. Production may not. `npm run deploy:cloudflare` invokes the artifact validator with `--production-origin`; it refuses canonical hosts in the reserved `.example`, `.invalid`, `.test`, or `.localhost` namespaces and hosts ending in `.chatgpt.site` or `.workers.dev`. Rebuild the assets with `VITE_SITE_URL="https://inkeep.ing"` before attempting production deployment. Changing an environment variable after the build does not rewrite the artifact.
@@ -320,6 +325,10 @@ For a client regression with healthy DNS:
 6. Correct forward through a reviewed pull request. Do not leave an undocumented dashboard-only configuration change.
 
 Static deployment rollback does not roll back, merge, or move IndexedDB. Older clients may reject newer workspace/interchange schema versions by design.
+Do not select or redeploy a revision before the commercial baseline merely as a
+technical rollback. If no post-baseline version is safe, contain the incident by
+disabling product access or fixing forward under the documented emergency
+procedure; historical grants and already distributed copies remain unaffected.
 
 ### Custom Domain rollback
 

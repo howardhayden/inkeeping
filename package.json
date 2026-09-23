@@ -2,7 +2,7 @@
   "name": "in-keeping",
   "version": "1.0.0",
   "private": true,
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -12,6 +12,7 @@
     "build": "bash scripts/build-verified.sh",
     "start": "vite preview --host 0.0.0.0",
     "test": "npm run build && npm run test:unit",
+    "test:licensing": "node scripts/check-licensing.mjs",
     "test:unit": "node --experimental-strip-types --test tests/*.test.mjs",
     "typecheck": "npm run typecheck:app && npm run typecheck:worker && npm run typecheck:tools",
     "typecheck:app": "tsc -p tsconfig.app.json",
@@ -20,7 +21,7 @@
     "lint": "bash scripts/sites-env.sh -- eslint .",
     "audit:dependencies": "npm audit --audit-level=high",
     "validate:cloudflare": "node scripts/validate-cloudflare-build.mjs",
-    "verify": "npm run lint && npm run typecheck && npm test",
+    "verify": "npm run test:licensing && npm run lint && npm run typecheck && npm test",
     "deploy:dry-run": "bash scripts/cloudflare-deploy.sh dry-run",
     "deploy:cloudflare": "bash scripts/cloudflare-deploy.sh production",
     "deploy:preview": "bash scripts/cloudflare-deploy.sh preview",

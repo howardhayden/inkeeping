@@ -1,11 +1,13 @@
-# Permissive code exceptions
+# No automatic implementation-reuse exceptions
 
-There are **no current permissive exceptions**. No file, function, snippet, or
-directory is assigned MIT by this policy.
+No new general reuse or permissive-code exceptions are declared by this policy.
+Noncommercial intent, institutional status, attribution, payment for product
+access, small function size, or extraction into a separate module is not a grant.
 
-A future exception requires extraction into a separate file or package; removal
-of project-specific workflows, labels, schemas, content, and data; independent
-tests; an explicit `SPDX-License-Identifier: MIT` notice; and an exact entry in
-`LICENSE-MAP.json` with retained engineering evidence.
+An additional permission requires an express written Owner grant naming the
+material, recipient, permitted actions, scope, and duration. A maintainer or
+agent must not create that permission merely by adding an SPDX header or map
+entry. Any actual exception must be recorded and reviewed within its exact scope.
 
-A function embedded in a `PolyForm-Noncommercial-1.0.0` file remains under `PolyForm-Noncommercial-1.0.0`.
+Valid earlier grants, third-party licenses, applicable platform rights, and
+statutory exceptions remain effective. This file does not rewrite those terms.

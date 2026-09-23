@@ -48,13 +48,11 @@ jobs:
       - name: Validate the software bill of materials
         run: node -e "JSON.parse(require('node:fs').readFileSync('in-keeping.cdx.json', 'utf8'))"
 
-      - name: Retain the exact static assets, checkpoint adapter, and SBOM
+      - name: Retain the exact SBOM
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: in-keeping-${{ github.sha }}
-          path: |
-            dist
-            in-keeping.cdx.json
+          name: in-keeping-sbom-${{ github.sha }}
+          path: in-keeping.cdx.json
           if-no-files-found: error
           retention-days: 14
 

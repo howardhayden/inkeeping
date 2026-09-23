@@ -1,33 +1,40 @@
-# Licensing
+# IN KEEPING — licensing policy
 
-Copyright (c) 2026 Hayden Howard.
+Policy revision: 2026-09-23. Effective prospectively with the repository commit
+or distribution that introduces this policy. This is a policy revision, not a
+claim of independent legal review or a change to prior valid grants.
 
-This repository is **source-available for noncommercial use**. It is not offered
-as open-source software because the public software license excludes commercial
-purposes.
+## Controlling terms
 
-Apply terms in this order:
+Original Owner-controlled material is proprietary under the
+[Hayden Howard Proprietary Product and Source License 1.0](LICENSE).
+The identifier is `LicenseRef-Hayden-Proprietary-1.0`. It is not open source and has
+no general noncommercial, educational, nonprofit, or governmental reuse grant.
+`LICENSE-MAP.json` identifies material scopes; it does not relicense third-party
+components or eliminate rights already granted over earlier material.
 
-1. an explicit notice in a file;
-2. a third-party or source-specific notice;
-3. this document and `LICENSE-MAP.json`;
-4. the default software license.
+## Official use, inspection, and implementation are separate
 
-## Original software — PolyForm-Noncommercial-1.0.0
+An intentionally free Official Product may be used within its actual offered
+scope. A priced Official Product requires the applicable purchase, subscription,
+or express exception. A free tier or trial grants only its stated access.
+A missing price on a repository is not a free product offering. Existing valid
+paid entitlements retain their agreed scope and duration.
 
-Unless a narrower category below applies, original source code, stylesheets,
-configuration, tests, scripts, workers, code-defined schemas, code-embedded
-content or data, and generated executable software are licensed under the
-PolyForm Noncommercial License 1.0.0. The root `LICENSE` and
-`LICENSES/PolyForm-Noncommercial-1.0.0.txt` contain the complete terms.
+Product access, including paid access at work or at an institution, never by
+itself licenses source extraction, modification, redistribution, incorporation,
+self-hosting, templates, or derivative implementations. Source made available
+for evaluation may be inspected within the controlling terms; build instructions
+and repository access are not independent grants to run it.
 
-The public license grants no commercial-use permission. See
-`COMMERCIAL-LICENSE.md` for the repository policy summary.
+The Owner's expressly authorized collaborators and agents may perform their
+assigned work for the Owner. That authorization does not become their own
+reuse license. Attribution and noncommercial intent do not substitute for
+permission. There are no automatic general-purpose-function exceptions.
 
-## Project-specific workflow implementation
+## Protected implementation scope
 
-The default software license covers the copyrightable expression and
-implementation of:
+The policy covers the Owner's copyrightable implementation and expression of:
 
 - hostile-file intake, bounded parsing, quarantine, comparison, review, and explicit apply
 - catalog and archival normalization, schema, crosswalk, provenance, and loss-reporting workflows
@@ -36,47 +43,42 @@ implementation of:
 - Technical Report, Public Notice, inventory, matrix, ticket, postmortem, and runbook generation
 - the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts
 
-This identification does not claim exclusive rights over abstract ideas,
-methods, systems, facts, or functionality that copyright law does not protect.
+Original documentation and media are no longer offered through a new blanket
+CC-BY-NC-SA grant by this policy. This does not revoke an existing valid Creative
+Commons grant. Executable bundles and mixed documents retain the applicable
+terms of their components.
 
-## General-purpose coding functions
+## Boundaries and precedence
 
-No function inside a covered file becomes permissively licensed merely because
-it could be useful elsewhere. At introduction of this policy, **no original
-source file or function is licensed under MIT**.
+Apply applicable law and platform rights first. Preserve valid earlier grants
+and third-party terms for their material. Apply separately signed Owner
+agreements only within their express scope, then protected identity or register
+terms, the ordered scope map, and the default proprietary license.
 
-A future utility may receive a permissive exception only after extraction into
-a separate file or package, removal of project-specific workflow expression, an
-explicit `SPDX-License-Identifier: MIT` notice, independent tests, and an exact
-entry in `LICENSE-MAP.json`. See `PERMISSIVE-EXCEPTIONS.md`.
+Historical MIT, PolyForm, Creative Commons, and other license notices must not
+be deleted or rewritten to imply that earlier rights vanished. Those grants
+remain effective for the copies to which they validly attached; this policy
+does not assert that an earlier grant automatically attaches to a later
+snapshot. Third-party fonts, packages, algorithms, and media retain their own
+notices. A public GitHub repository remains subject to the platform's
+viewing and forking rights; this policy does not make public bytes private.
 
-## Separable original documentation and media — CC-BY-NC-SA-4.0
+The policy does not claim ownership of unprotected ideas, facts, methods,
+functionality, public-domain material, or independently created expression.
+User-owned input and data remain user-owned. Ordinary authorized product
+outputs and recovery workflows follow section 5 of `LICENSE` without
+licensing embedded implementation material or bypassing product evidence gates.
 
-Original prose, explanatory diagrams, and non-code figures in the paths listed
-in `LICENSE-MAP.json` are licensed under Creative Commons
-Attribution-NonCommercial-ShareAlike 4.0 International. Software code,
-substantive code excerpts, code-embedded data, and executable definitions in a
-mixed file remain under `PolyForm-Noncommercial-1.0.0`. Third-party material retains its own terms.
+## Maintenance
 
-## Generated artifacts
+Do not introduce a new reuse grant, permissive exception, or blanket free-use
+claim without an explicit, scoped Owner decision. Keep root terms, notices,
+license maps, package metadata, published license descriptions, and licensing
+tests consistent. Preserve third-party and historical terms rather than doing
+a repository-wide replacement of every license identifier.
 
-Generation does not erase source licenses. Executable bundles remain governed
-by the software terms for covered code; embedded documentation, media, fonts,
-and third-party components retain their source terms.
-
-## Third-party material
-
-Third-party packages, fonts, algorithms, icons, photographs, audio, datasets,
-and other materials are not relicensed. Their own notices control.
-
-## Earlier snapshots
-
-This policy is prospective. It does not withdraw permissions already attached
-to earlier copies distributed under MIT or another license. It governs files as
-offered from the commit introducing this policy forward, subject to ownership,
-file history, and source-specific notices.
-
-## Names and marks
-
-No copyright license grants trademark, likeness, endorsement, or official-status
-rights. See `TRADEMARKS.md`.
+This change does not set prices, create accounts or billing, enforce a paywall,
+change repository visibility, activate a held feature, or release a product.
+Licensing, pricing, and technical access enforcement require separate work.
+Before commercial launch or enforcement, obtain qualified review of the terms,
+ownership chain, historical grants, customer assent, and actual distribution.

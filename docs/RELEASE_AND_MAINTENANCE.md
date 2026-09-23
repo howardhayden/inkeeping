@@ -59,6 +59,7 @@ Replace the token with the exact production origin. The command expands as follo
 ```text
 release:check
   +-- verify
+  |     +-- prospective licensing and commercial-baseline check
   |     +-- lint
   |     +-- typecheck
   |     |     +-- application
@@ -113,7 +114,8 @@ The committed workflows provide:
 - `npm ci` from `package-lock.json`;
 - the full release gate;
 - a CycloneDX JSON SBOM produced by `npm sbom` and JSON-validated;
-- a per-commit artifact containing `dist` and the SBOM for 14 days;
+- a per-commit artifact containing only the SBOM for 14 days; deployable `dist`
+  output is not published as a GitHub Actions artifact;
 - dependency review on pull requests with a `moderate` failure threshold; and
 - CodeQL for JavaScript/TypeScript on pull requests, `main`, a weekly schedule, and manual dispatch.
 
@@ -145,13 +147,21 @@ For each dependency change:
 
 ### SBOM handling
 
-The CI SBOM is generated from the exact release dependency graph and retained with the build artifact. The release record stores its filename, digest, workflow run, and disposition. Retain SBOMs according to institutional software/supply-chain policy, which should normally outlast the 14-day CI artifact window. Do not treat the SBOM as a vulnerability scan or proof of reproducibility by itself.
+The CI SBOM is generated from the exact release dependency graph and retained as
+the only GitHub Actions artifact. The release record stores its filename,
+digest, workflow run, and disposition. Deployable `dist` output is delivered
+only through the separately authorized production channel, not attached to CI
+runs. Retain SBOMs according to institutional software/supply-chain policy,
+which should normally outlast the 14-day CI artifact window. Do not treat the
+SBOM as a vulnerability scan or proof of reproducibility by itself.
 
 ## Release procedure
 
 ### 1. Prepare
 
 - Select version and update `package.json`, `CHANGELOG.md`, and compatibility documentation as needed.
+- Confirm the candidate contains `COMMERCIAL_BASELINE.md`, passes
+  `npm run test:licensing`, and descends from the recorded baseline parent.
 - Freeze schema/version identifiers and the exact `CANONICAL_ORIGIN`.
 - Confirm no `.example`, `.invalid`, `.test`, `.localhost`, temporary Sites, preview, or `workers.dev` origin remains in built public metadata.
 - Complete automated and required manual evidence.
@@ -163,6 +173,8 @@ The CI SBOM is generated from the exact release dependency graph and retained wi
 - Require the protected checks and independent approval.
 - Merge only the reviewed final commit into `main`.
 - Record the full merge/release SHA; abbreviated hashes are display aids only.
+- Record whether that SHA is the commercial baseline or a descendant; never
+  relabel a pre-baseline revision as proprietary.
 
 ### 3. Build and deploy
 
@@ -249,7 +261,9 @@ Stop or roll back when:
 1. Freeze further merges and deployments.
 2. Preserve affected in-memory work through approved plaintext backups before reload.
 3. Record current and target deployment IDs and full commits.
-4. Roll Cloudflare back to the last verified static-asset version or correct the specific DNS/domain fault.
+4. Roll Cloudflare back only to the last verified post-baseline static-asset
+   version, or correct the specific DNS/domain fault. If none is safe, disable
+   product access or fix forward rather than redeploying a pre-baseline build.
 5. Rerun the live verification matrix.
 6. Test older-client compatibility against backup copies before operators resume.
 7. Fix forward through a reviewed pull request and add a regression test.

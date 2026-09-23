@@ -15,6 +15,7 @@ Describe the operational problem, affected workflows, and why this change belong
 - [ ] New behavior has deterministic automated coverage.
 - [ ] Manual or external validation evidence is linked where automation cannot establish the claim.
 - [ ] Documentation, change log, and affected traceability rows are updated.
+- [ ] Licensing metadata, historical/third-party notices, and the commercial-baseline boundary remain consistent.
 
 ## Recovery
 

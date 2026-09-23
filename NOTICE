@@ -1,12 +1,13 @@
 Required Notice: Copyright (c) 2026 Hayden Howard.
 
 IN KEEPING
-Primary original-software license: PolyForm-Noncommercial-1.0.0
-Additional original-material terms: CC-BY-NC-SA-4.0
-Commercial use is not granted by the public repository license.
-No current permissive source-code exceptions are declared.
-Policy effective: revisions beginning with the merge commit that introduces this notice.
+Primary original-material license: LicenseRef-Hayden-Proprietary-1.0
+Official product use follows its free offering or purchased entitlement.
+No general code reuse, modification, redistribution, or self-hosting grant.
+Product payment and noncommercial or institutional status are not reuse rights.
+Policy effective prospectively from the commit or distribution introducing it.
+Valid earlier grants, third-party terms, platform rights, and statutory exceptions remain effective.
 
-See LICENSING.md, WORKFLOW-BOUNDARIES.md, LICENSE-MAP.json, and
-COMMERCIAL-LICENSE.md. Third-party and source-specific notices take precedence.
-No trademark or endorsement rights are granted.
+See LICENSE, LICENSING.md, WORKFLOW-BOUNDARIES.md, LICENSE-MAP.json, and
+COMMERCIAL-LICENSE.md. Historical license texts are retained without changing
+past rights. No trademark or endorsement rights are granted.

@@ -4,6 +4,10 @@
 
 This register records adversarial checks against IN KEEPING and links each reproduced failure to its constraint, correction, executable evidence, and remaining limit. It supplements the candidate-specific [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md); it is not a certification, penetration-test attestation, institutional acceptance, or claim that every attack class has been exhausted.
 
+Licensing statements inside historical findings describe the inspected snapshot
+and the correction made during that run. Current and prospective terms are
+controlled by the root `LICENSE`, `LICENSING.md`, and `COMMERCIAL_BASELINE.md`.
+
 The defining question is:
 
 > Can IN KEEPING produce an artifact that looks complete, authoritative, and internally consistent when its evidence is incomplete, altered, ambiguously identified, or unrecoverable?
@@ -90,7 +94,7 @@ All rows below mean “corrected in this working tree.” Focused checks support
 | RT-OUT-002 | A Technical Report could accept a caller's false `valid` state, pair tampering with “No active exceptions,” treat service states as clean, downgrade restricted content, or conceal sample, closure, stale, unsaved, continuity, evidence, and history-scope limits. | The generator fully validates the snapshot and derives integrity itself; invalid state is `Action required`/mismatch. The UI obtains saved-copy/continuity context through live storage inspection. The report is conservatively potentially restricted and includes a 15th evidence-disposition cell plus explicit continuity/evidence/history limits. | `app/report-documents.ts`; direct tampered-snapshot, evidence, withdrawal, continuity, and report regressions in `tests/report-documents.test.mjs`. |
 | RT-OUT-003 | A blank Public Notice implied all services were healthy; direct generation accepted a tampered snapshot; resolving synthetic incidents bypassed the sample block; operational documents presented browser mutation time as verification. | Public Notice self-validates and rejects invalid snapshots, scopes absence rather than issuing an all-clear, and blocks any synthetic incident. Operational documents label time as untrusted, retain notes, mark template inventory rows as unverified, and require institutional review. | `app/report-documents.ts`, `app/lab-core.ts`, `app/continuity-lab.tsx`; generator, core, and interface regressions. |
 | RT-PORT-001 | A blank catalog export emitted a successful-looking native package with zero records that the same application refused to import. | All catalog formatters now fail closed unless given 1–1,000 records, and the interface disables blank catalog export with the same compatibility boundary. | `app/record-formats.ts`, `app/continuity-lab.tsx`; cross-format and interface regressions in `tests/lab-core.test.mjs` and `tests/interface-contracts.test.mjs`. |
-| RT-DOC-001 | Repository copy simultaneously described the current noncommercial license and claimed release under MIT. | The stale permissive statement was removed and documentation contracts now assert the governing noncommercial boundary. | `README.md`, `tests/documentation-contracts.test.mjs`; complete documentation and engineering results remain governed by the pending entry above. |
+| RT-DOC-001 | The inspected repository copy simultaneously described its then-current noncommercial license and claimed release under MIT. | The stale permissive statement was removed and documentation contracts asserted the then-governing noncommercial boundary. The later prospective commercial baseline is recorded separately and does not rewrite this historical finding. | `README.md`, `tests/documentation-contracts.test.mjs`; complete documentation and engineering results remain governed by the pending entry above. |
 
 ## Open and externally controlled findings
 

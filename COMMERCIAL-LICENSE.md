@@ -1,18 +1,18 @@
-# Commercial use
+# Product access and separate permissions
 
-The public repository license grants **no commercial-use permission** for
-original IN KEEPING software.
+IN KEEPING is proprietary. Use of an Official Product follows the free offering
+or purchased entitlement described in `LICENSE`. Institutions and
+commercial workplaces follow the same product-access rule; their status does
+not supply an implementation-reuse exception.
 
-A separate written license is needed before using the original software or
-protected workflow implementation for internal for-profit use; paid consulting,
-implementation, integration, customization, support, hosting, SaaS, or managed
-service; incorporation into a commercial product, service, training program, or
-operational offering; sale, resale, sublicensing, monetized distribution, or
-commercial promotion; or commercial dataset, model, agent, or machine-learning
-development or evaluation.
+Payment purchases end-user access within the actual offer, not source rights.
+No source incorporation, redistribution, derivative product, self-hosted
+implementation, or template license is offered automatically. Any additional
+permission requires a separate written grant signed by Hayden Howard identifying
+the recipient, material, allowed actions, scope, and duration. There is no
+standing commitment to offer such a grant.
 
-This is a policy summary, not a modification of the PolyForm license and not an
-automatic offer of commercial terms. Commercial permission, if offered, must be
-in a separate written agreement from Hayden Howard.
-
-Contact: howardhayden@tuta.io
+This document is a policy summary, not a checkout, subscription enrollment,
+price schedule, warranty, or amendment to a valid earlier or third-party license.
+Existing entitlements and the historical/statutory exceptions in `LICENSE`
+remain intact. Requests for additional permission are not permission themselves.
