@@ -1,131 +1,158 @@
-# PolyForm Noncommercial License 1.0.0
+# Hayden Howard Proprietary Product and Source License 1.0
 
-<https://polyformproject.org/licenses/noncommercial/1.0.0>
+Copyright (c) Hayden Howard. All rights reserved.
+SPDX-License-Identifier: LicenseRef-Hayden-Proprietary-1.0
 
-## Acceptance
+## 1. Scope and reserved rights
 
-In order to get any license under these terms, you must agree
-to them as both strict obligations and conditions to all
-your licenses.
+These terms apply to original material that Hayden Howard (the "Owner") has
+identified as governed by this license, including software source and object
+code, configurations, tests, schemas, original documentation, media, and their
+copyrightable selection and arrangement (the "Materials"). They grant only the
+limited permissions stated below. The Materials are proprietary, not open-source
+or generally licensed for noncommercial use.
 
-## Copyright License
+This license applies prospectively from the repository commit or distribution
+that introduces it, only to rights the Owner can license. It does not revoke or
+narrow valid earlier grants, relicense third-party material, or create rights in
+ideas, facts, methods, or other matter not protected by applicable law. Section 7
+controls those boundaries throughout this license.
 
-The licensor grants you a copyright license for the
-software to do everything you might do with the software
-that would otherwise infringe the licensor's copyright
-in it for any permitted purpose.  However, you may
-only distribute the software according to [Distribution
-License](#distribution-license) and make changes or new works
-based on the software according to [Changes and New Works
-License](#changes-and-new-works-license).
+## 2. Official-product use is separate from source reuse
 
-## Distribution License
+An "Official Product" is an application or executable distribution that the
+Owner intentionally offers to end users through an Owner-designated site,
+store, or delivery channel. Source-repository availability is not itself an
+Official Product offering. Installation instructions, example commands, a
+missing checkout, or access to a file are not an independent grant to build,
+run, self-host, or redistribute the source.
 
-The licensor grants you an additional copyright license
-to distribute copies of the software.  Your license
-to distribute covers distributing the software with
-changes and new works permitted by [Changes and New Works
-License](#changes-and-new-works-license).
+Subject to the actual offering, these terms, and any separately agreed product
+terms, the Owner grants a nonexclusive, nontransferable, nonsublicensable right
+to operate the unmodified Official Product for its documented purpose within
+the scope of your end-user entitlement:
 
-## Notices
+- **Expressly free offering:** you may use the functionality the Owner
+  intentionally offers without a charge, within the stated users, edition,
+  channel, duration, and other limits. Absence of a listed price by itself is
+  not permission to use repository code or an unoffered product.
+- **Priced offering:** the applicable purchase, subscription, or express written
+  exception is required before using the priced functionality. A separately
+  offered free trial or free edition is limited to its stated scope.
+- **Changes to an offering:** the Owner may end or change a free offering for
+  future access or use by communicating the new terms and their effective date.
+  This does not impose retroactive fees, authorize a charge without agreement,
+  cancel an existing valid paid entitlement, or revoke rights preserved by
+  section 7. Perpetual purchases remain perpetual for their purchased scope;
+  term-based access follows the agreed term. Updates are included only to the
+  extent the applicable offer says they are.
 
-You must ensure that anyone who gets a copy of any part of
-the software from you also gets a copy of these terms or the
-URL for them above, as well as copies of any plain-text lines
-beginning with `Required Notice:` that the licensor provided
-with the software.  For example:
+This limited operating permission includes the loading, browser caching, and
+installation copies technically necessary for authorized use and any backup
+copy expressly allowed by the applicable product terms or law. It is not a
+permission to create a separate deployment, distribute the product, or use its
+implementation in another product. A payment, subscription, donation, or free
+access never by itself purchases source-code rights.
 
-> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+## 3. Source inspection only
 
-## Changes and New Works License
+Where the Owner intentionally makes source or other Materials available for
+inspection, you may read them in the supplied inspection interface to evaluate
+the Owner's work or the Official Product. This does not grant a right to execute,
+compile, modify, adapt, incorporate, or redistribute the implementation.
+No additional download, archival-copy, or fork permission is granted here;
+applicable platform rights and legal exceptions remain as stated in section 7.
 
-The licensor grants you an additional copyright license to
-make changes and new works based on the software for any
-permitted purpose.
+The Owner and collaborators or agents acting within the Owner's express
+project-specific authorization may perform the work that authorization permits.
+Repository access or contributor status alone is not such authorization, and
+work for the Owner grants no independent reuse rights to a collaborator.
 
-## Patent License
+## 4. No general implementation-reuse permission
 
-The licensor grants you a patent license for the software that
-covers patent claims the licensor can license, or becomes able
-to license, that you would infringe by using the software.
+Except for a separate written grant signed by the Owner, the limited operating
+permission in section 2, or rights preserved by section 7, no permission is
+granted to copy, extract, modify, adapt, translate, distribute, sublicense, sell,
+rehost, self-host, or incorporate the Materials or their protected portions in
+another project, service, package, template, dataset, or product. Attribution
+does not substitute for permission. Small or general-purpose functions are not
+exceptions merely because they are reusable.
 
-## Noncommercial Purposes
+There is no automatic exception for personal, noncommercial, educational,
+nonprofit, research, governmental, or other institutional use. The same
+Official Product entitlement rules apply to those users. A commercial customer
+may use an Official Product at work within the purchased scope without thereby
+receiving permission to reuse or redistribute its implementation.
 
-Any noncommercial purpose is a permitted purpose.
+No grant is made to extract the protected Materials for machine-learning model training,
+fine-tuning, retrieval, prompting, evaluation, or derived implementations. This
+does not prohibit the Owner's authorized agents, documented Official Product
+functionality, independently created material, or uses allowed without the
+Owner's permission under applicable law. No contractual restriction here
+overrides a non-waivable right to reverse engineer, interoperate, repair, make
+an accessibility adaptation, or conduct otherwise lawful analysis.
 
-## Personal Uses
+## 5. User material and ordinary product output
 
-Personal use for research, experiment, and testing for
-the benefit of public knowledge, personal study, private
-entertainment, hobby projects, amateur pursuits, or religious
-observance, without any anticipated commercial application,
-is use for a permitted purpose.
+You retain your rights in your own input, records, prose, and other data. These
+terms do not assign those rights to the Owner. Within an authorized product
+workflow, you may save, back up, export, and use the ordinary reports or other
+outputs the product is designed to provide, subject to applicable third-party
+rights and any expressly disclosed output terms. This does not license embedded
+source, reusable templates, protected register definitions, or other separable
+implementation Materials. Product evidence, publication, safety, and export
+controls remain applicable; this clause does not bypass them.
 
-## Noncommercial Organizations
+## 6. Separate grants and notices
 
-Use by any charitable organization, educational institution,
-public research organization, public safety or health
-organization, environmental protection organization,
-or government institution is use for a permitted purpose
-regardless of the source of funding or obligations resulting
-from the funding.
+Only an express written grant signed by the Owner can grant additional rights
+in Owner-controlled Materials. A receipt for product access, a public repository,
+a build instruction, silence, attribution, or a technical capability is not a
+source-reuse license. Any exception must identify the material, recipient,
+permitted actions, scope, and duration. There is no standing promise to offer
+source licenses or permissive exceptions.
 
-## Fair Use
+Preserve applicable copyright, licensing, and third-party notices in copies
+that you are authorized to make. No trademark, identity, endorsement, or
+patent license is granted except where expressly stated in a separate agreement
+or necessarily supplied by applicable law.
 
-You may have "fair use" rights for the software under the
-law. These terms do not limit them.
+## 7. Earlier grants, third parties, platforms, and law
 
-## No Other Rights
+Valid permissions already attached to an earlier distributed copy remain
+available for that copy under their own terms. A later snapshot is governed by
+the terms applicable to that later distribution; this license does not assert
+that an earlier grant automatically attaches to it. A new filename, version,
+price, repository visibility setting, or license notice does not extinguish
+rights already attached to an earlier copy. Historical license texts
+and notices are retained as evidence, not expanded into a fresh grant over new
+Owner-controlled material. These terms are not an amendment to MIT, PolyForm,
+Creative Commons, or another pre-existing license.
 
-These terms do not allow you to sublicense or transfer any of
-your licenses to anyone else, or prevent the licensor from
-granting licenses to anyone else.  These terms do not imply
-any other licenses.
+Third-party components, fonts, algorithms, media, and other material retain their
+own licenses and notices. Those terms control the third-party scope and may
+permit uses that this license does not grant for the Owner's Materials.
+The Owner claims no exclusive rights over unprotected ideas, facts, methods,
+functionality, public-domain material, or independently created expression.
 
-## Patent Defense
+For a public GitHub repository, rights supplied by GitHub's applicable Terms of
+Service, including platform viewing and forking rights, are not restricted by
+this license. They are not represented here as a general off-platform
+implementation-reuse license. Fair use, fair dealing, and other applicable
+statutory exceptions and non-waivable rights remain unaffected.
 
-If you make any written claim that the software infringes or
-contributes to infringement of any patent, your patent license
-for the software granted under these terms ends immediately. If
-your company makes such a claim, your patent license ends
-immediately for work on behalf of your company.
+## 8. Warranty, liability, and agreed terms
 
-## Violations
+Except for an express written warranty or a requirement of applicable law, the
+Materials are provided "AS IS", without warranties of merchantability, fitness
+for a particular purpose, or noninfringement. To the extent permitted by law,
+the Owner is not liable for damages arising from their use. Nothing here
+excludes a non-waivable consumer right or liability that cannot lawfully be
+excluded. This notice is not a representation of legal review, security
+certification, or fitness for a safety-critical purpose.
 
-The first time you are notified in writing that you have
-violated any of these terms, or done anything with the software
-not covered by your licenses, your licenses can nonetheless
-continue if you come into full compliance with these terms,
-and take practical steps to correct past violations, within
-32 days of receiving notice.  Otherwise, all your licenses
-end immediately.
-
-## No Liability
-
-***As far as the law allows, the software comes as is, without
-any warranty or condition, and the licensor will not be liable
-to you for any damages arising out of these terms or the use
-or nature of the software, under any kind of legal claim.***
-
-## Definitions
-
-The **licensor** is the individual or entity offering these
-terms, and the **software** is the software the licensor makes
-available under these terms.
-
-**You** refers to the individual or entity agreeing to these
-terms.
-
-**Your company** is any legal entity, sole proprietorship,
-or other kind of organization that you work for, plus all
-organizations that have control over, are under the control of,
-or are under common control with that organization.  **Control**
-means ownership of substantially all the assets of an entity,
-or the power to direct its management and policies by vote,
-contract, or otherwise.  Control can be direct or indirect.
-
-**Your licenses** are all the licenses granted to you for the
-software under these terms.
-
-**Use** means anything you do with the software requiring one
-of your licenses.
+A separately signed agreement controls its expressly identified scope. Product
+purchase, renewal, cancellation, refund, and privacy terms must be disclosed
+through the relevant offering; this license does not invent a price, activate
+billing, enroll a subscription, or promise support. Permissions not expressly
+granted or independently preserved are reserved.

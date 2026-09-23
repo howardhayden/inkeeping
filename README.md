@@ -48,7 +48,12 @@ Imports remain untrusted after structural review and explicit application. Contr
 
 See [Security](SECURITY.md), [Threat model](docs/THREAT_MODEL.md), and [Privacy and data governance](docs/PRIVACY_AND_DATA_GOVERNANCE.md) before using non-synthetic records.
 
-## Local development
+## Owner-authorized development
+
+These commands are for the Owner and expressly authorized collaborators or
+agents performing assigned project work. Repository availability and build
+instructions are not an independent grant to run, modify, redistribute,
+self-host, or reuse the implementation.
 
 Required runtime: Node.js 22.13 or later. Exact dependencies are locked.
 
@@ -116,9 +121,14 @@ Repository policy is in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURI
 
 ## Licensing
 
-IN KEEPING is **source-available for noncommercial use** under
-**PolyForm-Noncommercial-1.0.0**; commercial use requires a separate written license. Separable original documentation and media use **CC-BY-NC-SA-4.0**.
-No current source file or function has a permissive commercial-use exception.
-See [`LICENSING.md`](LICENSING.md),
+IN KEEPING is proprietary under the
+[`Hayden Howard Proprietary Product and Source License 1.0`](LICENSE)
+(`LicenseRef-Hayden-Proprietary-1.0`). An Official Product may be used only
+within its intentionally offered free scope or a purchased entitlement. Public
+source availability permits inspection under the controlling terms, not a
+general right to build, modify, redistribute, self-host, or reuse the
+implementation. This policy applies prospectively and preserves valid earlier
+grants, third-party terms, platform rights, and statutory exceptions. See
+[`LICENSING.md`](LICENSING.md),
 [`WORKFLOW-BOUNDARIES.md`](WORKFLOW-BOUNDARIES.md), and
 [`LICENSE-MAP.json`](LICENSE-MAP.json) for scope and historical limits.

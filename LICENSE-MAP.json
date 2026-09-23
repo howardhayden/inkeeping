@@ -1,13 +1,15 @@
 {
-  "format": "howardhayden-license-map-v2",
+  "format": "howardhayden-license-map-v3",
   "audited": "2026-08-24",
   "project": "IN KEEPING",
   "source_available_not_open_source": true,
-  "default_license": "PolyForm-Noncommercial-1.0.0",
+  "default_license": "LicenseRef-Hayden-Proprietary-1.0",
   "commercial_use_granted": false,
   "precedence": [
-    "explicit-file-notice",
-    "third-party-or-source-specific-notice",
+    "applicable-law-and-platform-rights",
+    "valid-earlier-grants-and-third-party-terms",
+    "separately-signed-owner-agreements",
+    "reserved-identity-and-register-specific-terms",
     "ordered-rules-below",
     "default-license"
   ],
@@ -22,7 +24,7 @@
         "SUPPORT.md",
         "docs/**"
       ],
-      "license": "CC-BY-NC-SA-4.0",
+      "license": "LicenseRef-Hayden-Proprietary-1.0",
       "scope": "original prose and non-code figures; code, substantive code excerpts, and code-embedded data remain under the default software license"
     },
     {
@@ -33,7 +35,7 @@
         "public/**/*.webp",
         "public/**/*.svg"
       ],
-      "license": "CC-BY-NC-SA-4.0",
+      "license": "LicenseRef-Hayden-Proprietary-1.0",
       "scope": "separable original media only; third-party notices and source-identifying marks override"
     },
     {
@@ -67,11 +69,18 @@
     "the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts"
   ],
   "permissive_exceptions": [],
-  "permissive_exception_requirements": {
-    "license": "MIT",
-    "requires_separate_file_or_package": true,
-    "requires_spdx_header": true,
-    "requires_explicit_map_entry": true
-  },
-  "historical_notice": "Earlier copies retain permissions attached to the license under which those copies were distributed."
+  "historical_notice": "Valid earlier grants remain effective for the copies to which they validly attached. This policy does not assert that an earlier grant automatically attaches to a later snapshot. New pricing or this notice does not revoke rights already attached to earlier copies. Historical and third-party license texts are not new grants over new Owner-controlled material.",
+  "policy_updated": "2026-09-23",
+  "policy_license_file": "LICENSE",
+  "implementation_reuse_granted": false,
+  "noncommercial_reuse_granted": false,
+  "institutional_reuse_exception": false,
+  "official_product_use_only": true,
+  "priced_product_requires_entitlement": true,
+  "no_automatic_permissive_exceptions": true,
+  "reuse_exception_requirements": {
+    "requires_explicit_signed_owner_grant": true,
+    "requires_exact_material_and_scope": true,
+    "product_payment_is_not_source_permission": true
+  }
 }

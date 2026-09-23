@@ -35,20 +35,18 @@ Update the changelog, affected documentation, risk register, traceability matrix
 
 Use the repository template. Keep commits reviewable, do not bypass branch protection, and do not add secrets or real restricted records. GitHub Actions must be pinned to immutable full commit SHAs. Dependency changes must update the lockfile and pass dependency review.
 
-## Contribution licensing
-
-By submitting a contribution, you represent that you have the right to submit it and agree to license it under the written terms governing the affected material in [LICENSING.md](LICENSING.md). Current software and mixed source files are source-available for noncommercial use under PolyForm-Noncommercial-1.0.0; separable original documentation and media use CC-BY-NC-SA-4.0. Commercial use requires a separate written license. Third-party material must retain its original notices and terms.
-
 ## Licensing of contributions
 
-This source-available repository is not accepting unsolicited code, content,
+This proprietary repository is not accepting unsolicited code, content,
 design, workflow, or data pull requests. Issue reports may be opened without
 transferring copyright.
 
-A substantive contribution is accepted only after written terms preserve the
-maintainer's ability to license it consistently with the repository, including
-under a separate commercial license. Do not submit employer-, client-, school-,
-team-, or third-party-owned material without documented authority.
+A substantive contribution is accepted only after documented ownership and
+signed terms preserve the Owner's ability to license it consistently with the
+repository policy and any expressly scoped separate agreement. Do not submit
+employer-, client-, school-, team-, or third-party-owned material without
+documented authority. Historical grants and third-party notices must remain
+intact within their actual scope.
 
 Accepted engineering changes must preserve genuine engineering evidence through:
 `issue → constraint → design decision → implementation → failed test → correction → verification`.

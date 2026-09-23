@@ -2,6 +2,16 @@
 
 This project follows Semantic Versioning for application releases. Interchange and storage schemas retain their own explicit versions.
 
+## Unreleased
+
+### Changed
+
+- Established a prospective proprietary commercial baseline while preserving
+  valid earlier MIT, PolyForm Noncommercial, Creative Commons, platform, and
+  third-party rights within their actual scope.
+- Added a fail-closed licensing-policy check to the release gate and stopped
+  publishing deployable `dist` output as a GitHub Actions artifact.
+
 ## 1.0.0 — 2026-08-20
 
 ### Added
