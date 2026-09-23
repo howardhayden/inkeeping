@@ -82,7 +82,8 @@ claim without an explicit, scoped Owner decision. Keep root terms, notices,
 license maps, package metadata, published license descriptions, and licensing
 tests consistent. Preserve third-party terms and evidence of terms attached to
 earlier copies rather than doing a repository-wide replacement of every license
-identifier; retained historical text is evidence, not a new grant.
+identifier. Exact superseded Owner terms retained under `LICENSES/HISTORICAL/`
+are evidence, not the active policy or a new grant.
 
 This change does not set prices, create accounts or billing, enforce a paywall,
 change repository visibility, activate a held feature, or release a product.

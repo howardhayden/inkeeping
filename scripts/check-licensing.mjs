@@ -15,6 +15,7 @@ const baselineParent = "f45b1fb1b64011c44a3c85cd1307745517d0a7d6";
 const permissiveCutoff = "1019e26582c9f676b1184ef6ced42adea65b732b";
 const baselineCommit = "a9915ad36b43759e32dbe46befc09bd64743dcfb";
 const historicalHashes = new Map([
+  ["LICENSES/HISTORICAL/Hayden-Proprietary-1.0-2026-09-23.txt", "822ce196a020ed2d4e3f077af3f2b49f11f8fc57e4310f3b32ac7cdb461054a0"],
   ["LICENSES/MIT-2026-08-24.txt", "f1ae5d3c15dc06b1cadeabb6c55e1abf095275554875c1d40df41d870f797d72"],
   ["LICENSES/PolyForm-Noncommercial-1.0.0.txt", "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8"],
   ["LICENSES/CC-BY-NC-SA-4.0.txt", "1349a4b6148492b44f629e64eed676612e234fe9a839e4f3b277c1482c8849f1"],
