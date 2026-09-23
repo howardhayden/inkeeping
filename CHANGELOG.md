@@ -6,6 +6,11 @@ This project follows Semantic Versioning for application releases. Interchange a
 
 ### Changed
 
+- Normalized the active proprietary policy to the canonical 1.1 text and
+  copy-specific historical boundary while retaining the 1.0 commercial baseline
+  as historical evidence.
+- Aligned package, citation, license-map, documentation, and generated-SBOM
+  validation surfaces with `LicenseRef-Hayden-Proprietary-1.1`.
 - Established a prospective proprietary commercial baseline while preserving
   valid earlier MIT, PolyForm Noncommercial, Creative Commons, platform, and
   third-party rights within their actual scope.

@@ -2,7 +2,7 @@
   "name": "in-keeping",
   "version": "1.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "LicenseRef-Hayden-Proprietary-1.1",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -13,6 +13,7 @@
     "start": "vite preview --host 0.0.0.0",
     "test": "npm run build && npm run test:unit",
     "test:licensing": "node scripts/check-licensing.mjs",
+    "validate:sbom": "node scripts/validate-sbom.mjs",
     "test:unit": "node --experimental-strip-types --test tests/*.test.mjs",
     "typecheck": "npm run typecheck:app && npm run typecheck:worker && npm run typecheck:tools",
     "typecheck:app": "tsc -p tsconfig.app.json",

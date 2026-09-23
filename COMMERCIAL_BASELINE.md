@@ -32,3 +32,14 @@ release record and, if a tag is authorized, create an annotated
 `commercial-baseline-YYYYMMDD` tag pointing to that exact commit. Deployment and
 release automation must reject revisions that do not contain the baseline
 marker and pass the licensing-policy check.
+
+## Successor policy note — 2026-09-23 UTC
+
+The baseline above remains the historical record of the prospective 1.0 policy
+introduced at commit `a9915ad36b43759e32dbe46befc09bd64743dcfb`.
+Later Owner-controlled copies move prospectively to the Hayden Howard
+Proprietary Product and Source License 1.1
+(`LicenseRef-Hayden-Proprietary-1.1`). Permissions validly attached to earlier
+distributed copies remain governed by their own terms and do not automatically
+attach to later copies or snapshots. The successor wording does not alter the
+baseline parent, permissive cutoffs, or third-party scopes recorded above.

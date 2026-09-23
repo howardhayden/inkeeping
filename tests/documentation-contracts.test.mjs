@@ -132,12 +132,12 @@ test("repository licensing and red-team evidence do not make contradictory autho
   const register = await readFile(path.join(projectRoot, "docs/RED_TEAM_REGISTER.md"), "utf8");
   const historicalValidation = await readFile(path.join(projectRoot, "docs/VALIDATION_REPORT.md"), "utf8");
 
-  assert.match(readme, /Hayden Howard Proprietary Product and Source License 1\.0/i);
+  assert.match(readme, /Hayden Howard Proprietary Product and Source License 1\.1/i);
   assert.match(readme, /applies prospectively/i);
   assert.doesNotMatch(readme, /source-available for noncommercial use/i);
   assert.doesNotMatch(readme, /released under the \[MIT License\]/i);
-  assert.match(licensing, /LicenseRef-Hayden-Proprietary-1\.0/);
-  assert.match(licensing, /valid earlier grants/i);
+  assert.match(licensing, /LicenseRef-Hayden-Proprietary-1\.1/);
+  assert.match(licensing, /permissions validly attached to earlier[\s\S]*do not automatically attach to later copies or snapshots/i);
   assert.doesNotMatch(licensing, /Original software.*PolyForm-Noncommercial-1\.0\.0/is);
   assert.doesNotMatch(contributing, /Software and mixed source files follow the MIT License/i);
   assert.doesNotMatch(contributing, /standalone documentation follows CC BY-SA 4\.0/i);

@@ -113,7 +113,8 @@ The committed workflows provide:
 - exact checkout and Node runtime setup;
 - `npm ci` from `package-lock.json`;
 - the full release gate;
-- a CycloneDX JSON SBOM produced by `npm sbom` and JSON-validated;
+- a CycloneDX JSON SBOM produced by `npm sbom`, JSON-validated, and checked so
+  its root component declares `LicenseRef-Hayden-Proprietary-1.1`;
 - a per-commit artifact containing only the SBOM for 14 days; deployable `dist`
   output is not published as a GitHub Actions artifact;
 - dependency review on pull requests with a `moderate` failure threshold; and
@@ -147,8 +148,9 @@ For each dependency change:
 
 ### SBOM handling
 
-The CI SBOM is generated from the exact release dependency graph and retained as
-the only GitHub Actions artifact. The release record stores its filename,
+The CI SBOM is generated from the exact release dependency graph, checked with
+`npm run validate:sbom -- in-keeping.cdx.json` for the current root license, and
+retained as the only GitHub Actions artifact. The release record stores its filename,
 digest, workflow run, and disposition. Deployable `dist` output is delivered
 only through the separately authorized production channel, not attached to CI
 runs. Retain SBOMs according to institutional software/supply-chain policy,

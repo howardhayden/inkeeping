@@ -122,13 +122,15 @@ Repository policy is in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURI
 ## Licensing
 
 IN KEEPING is proprietary under the
-[`Hayden Howard Proprietary Product and Source License 1.0`](LICENSE)
-(`LicenseRef-Hayden-Proprietary-1.0`). An Official Product may be used only
+[`Hayden Howard Proprietary Product and Source License 1.1`](LICENSE)
+(`LicenseRef-Hayden-Proprietary-1.1`). An Official Product may be used only
 within its intentionally offered free scope or a purchased entitlement. Public
 source availability permits inspection under the controlling terms, not a
 general right to build, modify, redistribute, self-host, or reuse the
-implementation. This policy applies prospectively and preserves valid earlier
-grants, third-party terms, platform rights, and statutory exceptions. See
+implementation. This policy applies prospectively. Permissions validly attached
+to earlier distributed copies remain governed by their own terms and do not
+automatically attach to later copies or snapshots. Third-party terms, platform
+rights, and statutory exceptions retain their own scope. See
 [`LICENSING.md`](LICENSING.md),
 [`WORKFLOW-BOUNDARIES.md`](WORKFLOW-BOUNDARIES.md), and
 [`LICENSE-MAP.json`](LICENSE-MAP.json) for scope and historical limits.
