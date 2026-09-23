@@ -1,7 +1,7 @@
-# Hayden Howard Proprietary Product and Source License 1.0
+# Hayden Howard Proprietary Product and Source License 1.1
 
 Copyright (c) Hayden Howard. All rights reserved.
-SPDX-License-Identifier: LicenseRef-Hayden-Proprietary-1.0
+SPDX-License-Identifier: LicenseRef-Hayden-Proprietary-1.1
 
 ## 1. Scope and reserved rights
 
@@ -13,10 +13,12 @@ limited permissions stated below. The Materials are proprietary, not open-source
 or generally licensed for noncommercial use.
 
 This license applies prospectively from the repository commit or distribution
-that introduces it, only to rights the Owner can license. It does not revoke or
-narrow valid earlier grants, relicense third-party material, or create rights in
-ideas, facts, methods, or other matter not protected by applicable law. Section 7
-controls those boundaries throughout this license.
+that introduces it, only to rights the Owner can license. Permissions validly
+attached to earlier distributed copies remain governed by their own terms and
+do not automatically attach to later copies or snapshots. This license does not
+relicense third-party material or create rights in ideas, facts, methods, or
+other matter not protected by applicable law. Section 7 controls those
+boundaries throughout this license.
 
 ## 2. Official-product use is separate from source reuse
 
@@ -84,8 +86,9 @@ Official Product entitlement rules apply to those users. A commercial customer
 may use an Official Product at work within the purchased scope without thereby
 receiving permission to reuse or redistribute its implementation.
 
-No grant is made to extract the protected Materials for machine-learning model training,
-fine-tuning, retrieval, prompting, evaluation, or derived implementations. This
+No grant is made to extract the protected Materials for machine-learning model
+training, fine-tuning, retrieval, prompting, evaluation, or derived
+implementations. This
 does not prohibit the Owner's authorized agents, documented Official Product
 functionality, independently created material, or uses allowed without the
 Owner's permission under applicable law. No contractual restriction here
@@ -117,15 +120,15 @@ that you are authorized to make. No trademark, identity, endorsement, or
 patent license is granted except where expressly stated in a separate agreement
 or necessarily supplied by applicable law.
 
-## 7. Earlier grants, third parties, platforms, and law
+## 7. Earlier-copy permissions, third parties, platforms, and law
 
-Valid permissions already attached to an earlier distributed copy remain
-available for that copy under their own terms. A later snapshot is governed by
-the terms applicable to that later distribution; this license does not assert
-that an earlier grant automatically attaches to it. A new filename, version,
-price, repository visibility setting, or license notice does not extinguish
-rights already attached to an earlier copy. Historical license texts
-and notices are retained as evidence, not expanded into a fresh grant over new
+Permissions validly attached to earlier distributed copies remain governed by
+their own terms and do not automatically attach to later copies or snapshots.
+These terms do not determine whether an earlier permission applies to a
+different copy or later distribution. A new filename, version, price,
+repository visibility setting, or license notice does not by itself extinguish
+rights validly attached to an earlier copy. Historical license texts and notices
+are retained as evidence, not expanded into a fresh grant over new
 Owner-controlled material. These terms are not an amendment to MIT, PolyForm,
 Creative Commons, or another pre-existing license.
 

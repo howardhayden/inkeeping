@@ -9,5 +9,7 @@ material, recipient, permitted actions, scope, and duration. A maintainer or
 agent must not create that permission merely by adding an SPDX header or map
 entry. Any actual exception must be recorded and reviewed within its exact scope.
 
-Valid earlier grants, third-party licenses, applicable platform rights, and
-statutory exceptions remain effective. This file does not rewrite those terms.
+Permissions validly attached to earlier distributed copies remain governed by
+their own terms and do not automatically attach to later copies or snapshots.
+Third-party licenses, applicable platform rights, and statutory exceptions retain
+their own scope. This file does not rewrite those terms.

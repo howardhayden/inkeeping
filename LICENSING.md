@@ -2,16 +2,19 @@
 
 Policy revision: 2026-09-23. Effective prospectively with the repository commit
 or distribution that introduces this policy. This is a policy revision, not a
-claim of independent legal review or a change to prior valid grants.
+claim of independent legal review. Permissions validly attached to earlier
+distributed copies remain governed by their own terms and do not automatically
+attach to later copies or snapshots.
 
 ## Controlling terms
 
 Original Owner-controlled material is proprietary under the
-[Hayden Howard Proprietary Product and Source License 1.0](LICENSE).
-The identifier is `LicenseRef-Hayden-Proprietary-1.0`. It is not open source and has
+[Hayden Howard Proprietary Product and Source License 1.1](LICENSE).
+The identifier is `LicenseRef-Hayden-Proprietary-1.1`. It is not open source and has
 no general noncommercial, educational, nonprofit, or governmental reuse grant.
 `LICENSE-MAP.json` identifies material scopes; it does not relicense third-party
-components or eliminate rights already granted over earlier material.
+components or determine whether a permission attached to an earlier distributed
+copy applies to a different copy or later distribution.
 
 ## Official use, inspection, and implementation are separate
 
@@ -44,24 +47,27 @@ The policy covers the Owner's copyrightable implementation and expression of:
 - the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts
 
 Original documentation and media are no longer offered through a new blanket
-CC-BY-NC-SA grant by this policy. This does not revoke an existing valid Creative
-Commons grant. Executable bundles and mixed documents retain the applicable
-terms of their components.
+CC-BY-NC-SA grant by this policy. A Creative Commons permission validly attached
+to an earlier distributed copy remains governed by its own terms and does not
+automatically attach to a later copy or snapshot. Executable bundles and mixed
+documents retain the applicable terms of their components.
 
 ## Boundaries and precedence
 
-Apply applicable law and platform rights first. Preserve valid earlier grants
-and third-party terms for their material. Apply separately signed Owner
-agreements only within their express scope, then protected identity or register
-terms, the ordered scope map, and the default proprietary license.
+Apply applicable law and platform rights first. Preserve permissions validly
+attached to earlier distributed copies within their own terms, and preserve
+third-party terms for their material. Apply separately signed Owner agreements
+only within their express scope, then protected identity or register terms, the
+ordered scope map, and the default proprietary license.
 
 Historical MIT, PolyForm, Creative Commons, and other license notices must not
-be deleted or rewritten to imply that earlier rights vanished. Those grants
-remain effective for the copies to which they validly attached; this policy
-does not assert that an earlier grant automatically attaches to a later
-snapshot. Third-party fonts, packages, algorithms, and media retain their own
-notices. A public GitHub repository remains subject to the platform's
-viewing and forking rights; this policy does not make public bytes private.
+be deleted or rewritten to imply that permissions validly attached to earlier
+distributed copies vanished. Those permissions remain governed by their own
+terms and do not automatically attach to later copies or snapshots; this policy
+does not decide their application to a different copy or later distribution.
+Third-party fonts, packages, algorithms, and media retain their own notices. A
+public GitHub repository remains subject to the platform's viewing and forking
+rights; this policy does not make public bytes private.
 
 The policy does not claim ownership of unprotected ideas, facts, methods,
 functionality, public-domain material, or independently created expression.
@@ -74,11 +80,13 @@ licensing embedded implementation material or bypassing product evidence gates.
 Do not introduce a new reuse grant, permissive exception, or blanket free-use
 claim without an explicit, scoped Owner decision. Keep root terms, notices,
 license maps, package metadata, published license descriptions, and licensing
-tests consistent. Preserve third-party and historical terms rather than doing
-a repository-wide replacement of every license identifier.
+tests consistent. Preserve third-party terms and evidence of terms attached to
+earlier copies rather than doing a repository-wide replacement of every license
+identifier; retained historical text is evidence, not a new grant.
 
 This change does not set prices, create accounts or billing, enforce a paywall,
 change repository visibility, activate a held feature, or release a product.
 Licensing, pricing, and technical access enforcement require separate work.
 Before commercial launch or enforcement, obtain qualified review of the terms,
-ownership chain, historical grants, customer assent, and actual distribution.
+ownership chain, permissions attached to earlier distributed copies, customer
+assent, and actual distribution.

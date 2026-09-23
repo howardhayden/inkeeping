@@ -12,4 +12,6 @@ automatic permissive carve-outs. `PERMISSIVE-EXCEPTIONS.md` records this boundar
 
 Owner-authorized maintenance and cross-project work remain possible within the
 Owner's express authorization; they do not grant third parties independent
-rights. Valid earlier and third-party grants remain effective for their scope.
+rights. Permissions validly attached to earlier distributed copies remain
+governed by their own terms and do not automatically attach to later copies or
+snapshots. Third-party terms retain their own scope.

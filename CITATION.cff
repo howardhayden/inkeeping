@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Howard
     given-names: Hayden
-license: LicenseRef-Hayden-Proprietary-1.0
+license: LicenseRef-Hayden-Proprietary-1.1
 repository-code: "https://github.com/howardhayden/inkeeping"
 url: "https://inkeep.ing"
 abstract: "A browser-local library systems continuity workbench for bounded metadata review, archival schemas, operating registers, incidents, reversible state, and static handoff reports."

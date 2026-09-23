@@ -77,9 +77,9 @@ git status --short
 ```
 
 The release gate begins with the repository licensing-policy check. It requires
-the commercial-baseline marker, aligned root/package/citation metadata, and the
-recorded historical and third-party notice hashes. A revision that fails this
-check is not deployable.
+the canonical 1.1 root text, the commercial-baseline and successor markers,
+aligned root/package/citation metadata, and the recorded historical and
+third-party notice hashes. A revision that fails this check is not deployable.
 
 `VITE_SITE_URL` must remain the exact final origin. `app/site-metadata.ts` rejects HTTP, credentials, explicit ports, paths, queries, and fragments. The value is compiled into canonical metadata, Open Graph metadata, `robots.txt`, and `sitemap.xml`; it is not a runtime switch.
 
@@ -112,7 +112,10 @@ Create a repository ruleset or branch-protection rule for `main` appropriate to 
 
 Signed commits and linear history are recommended when they match institutional policy. They do not replace review, build evidence, or an artifact digest.
 
-The workflows use read-only default permissions, immutable full-SHA action pins, locked dependencies, CodeQL, dependency review, and a CycloneDX SBOM. Do not weaken those controls to make a deployment pass.
+The workflows use read-only default permissions, immutable full-SHA action pins,
+locked dependencies, CodeQL, dependency review, and a CycloneDX SBOM whose root
+license declaration is checked against `LicenseRef-Hayden-Proprietary-1.1`. Do
+not weaken those controls to make a deployment pass.
 
 ## 2. Prepare Cloudflare without changing authority
 

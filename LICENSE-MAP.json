@@ -3,11 +3,11 @@
   "audited": "2026-08-24",
   "project": "IN KEEPING",
   "source_available_not_open_source": true,
-  "default_license": "LicenseRef-Hayden-Proprietary-1.0",
+  "default_license": "LicenseRef-Hayden-Proprietary-1.1",
   "commercial_use_granted": false,
   "precedence": [
     "applicable-law-and-platform-rights",
-    "valid-earlier-grants-and-third-party-terms",
+    "permissions-attached-to-earlier-copies-and-third-party-terms",
     "separately-signed-owner-agreements",
     "reserved-identity-and-register-specific-terms",
     "ordered-rules-below",
@@ -24,7 +24,7 @@
         "SUPPORT.md",
         "docs/**"
       ],
-      "license": "LicenseRef-Hayden-Proprietary-1.0",
+      "license": "LicenseRef-Hayden-Proprietary-1.1",
       "scope": "original prose and non-code figures; code, substantive code excerpts, and code-embedded data remain under the default software license"
     },
     {
@@ -35,7 +35,7 @@
         "public/**/*.webp",
         "public/**/*.svg"
       ],
-      "license": "LicenseRef-Hayden-Proprietary-1.0",
+      "license": "LicenseRef-Hayden-Proprietary-1.1",
       "scope": "separable original media only; third-party notices and source-identifying marks override"
     },
     {
@@ -69,7 +69,7 @@
     "the authored field models, safeguards, labels, diagrams, test fixtures, and traceability contracts"
   ],
   "permissive_exceptions": [],
-  "historical_notice": "Valid earlier grants remain effective for the copies to which they validly attached. This policy does not assert that an earlier grant automatically attaches to a later snapshot. New pricing or this notice does not revoke rights already attached to earlier copies. Historical and third-party license texts are not new grants over new Owner-controlled material.",
+  "historical_notice": "Permissions validly attached to earlier distributed copies remain governed by their own terms and do not automatically attach to later copies or snapshots. This policy does not decide whether an earlier permission applies to a different copy or later distribution, and historical or third-party license texts are not new grants over new Owner-controlled material.",
   "policy_updated": "2026-09-23",
   "policy_license_file": "LICENSE",
   "implementation_reuse_granted": false,
