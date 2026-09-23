@@ -37,6 +37,9 @@ marker and pass the licensing-policy check.
 
 The baseline above remains the historical record of the prospective 1.0 policy
 introduced at commit `a9915ad36b43759e32dbe46befc09bd64743dcfb`.
+Its exact root-license bytes are retained at
+`LICENSES/HISTORICAL/Hayden-Proprietary-1.0-2026-09-23.txt` solely as historical
+evidence, not as the active policy or a new grant over later material.
 Later Owner-controlled copies move prospectively to the Hayden Howard
 Proprietary Product and Source License 1.1
 (`LicenseRef-Hayden-Proprietary-1.1`). Permissions validly attached to earlier

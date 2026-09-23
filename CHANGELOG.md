@@ -11,6 +11,8 @@ This project follows Semantic Versioning for application releases. Interchange a
   as historical evidence.
 - Aligned package, citation, license-map, documentation, and generated-SBOM
   validation surfaces with `LicenseRef-Hayden-Proprietary-1.1`.
+- Retained the exact superseded 1.0 terms under `LICENSES/HISTORICAL/` as
+  hash-pinned historical evidence rather than an active grant.
 - Established a prospective proprietary commercial baseline while preserving
   valid earlier MIT, PolyForm Noncommercial, Creative Commons, platform, and
   third-party rights within their actual scope.
