@@ -24,6 +24,8 @@ The interface uses the restrained design language of hah.dev: Jost, paper and in
 
 ## Implemented surface
 
+- Source preservation: catalog and archival reviews offer a native package containing exact source bytes and the complete review. Import can reopen it, verify digests and recover the original file. Packages must be downloaded separately from workspace backups; see [source preservation](docs/SOURCE_PRESERVATION.md).
+
 - Catalog import: MARCXML, MARC mnemonic, OAI Dublin Core XML, MODS XML, IN KEEPING JSON, CSL-JSON, Schema.org JSON-LD, RIS, strict bounded BibTeX, CSV, and TSV.
 - Catalog output: IN KEEPING JSON, OAI Dublin Core XML batch, MODS XML, CSL-JSON, Schema.org JSON-LD, RIS, BibTeX, CSV, TSV, and MARC mnemonic.
 - Archival records: versioned custom schemas for description, accession, authority, agent, repository, digital object, rights, event, subject, and location records using 16 explicit field kinds.

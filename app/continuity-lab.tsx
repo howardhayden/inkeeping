@@ -12,7 +12,6 @@ import {
   makeOperationalDocument,
   MAX_AUDIT_EVENTS,
   prepareLocalWorkspace,
-  reviewImport,
   rollbackTo,
   forkWorkspace,
   recordWorkspaceAction,
@@ -65,7 +64,7 @@ import {
   type LocalExternalContinuityInput,
 } from "./lab-storage";
 import { DATA_FORMAT_RULES, EXCHANGE_FORMATS, RECORD_FORMATS, exchangeFilename, exchangeMime, formatRecords, type ExchangeFormat } from "./record-formats";
-import { ARCHIVE_EXCHANGE_FORMATS, ARCHIVE_FIELD_KINDS, ARCHIVE_LEVELS, ARCHIVE_PROFILES, ARCHIVE_RECORD_TYPES, archiveFilename, archiveMime, formatArchive, makeArchiveSchema, normalizeArchiveEditorValues, parseOneValuePerLine, parseOneValuePerLineDraft, reviewArchiveImport, type ArchiveField, type ArchiveImportReview, type ArchiveProfile, type ArchiveRecordType, type ArchiveSchema, type ArchiveUnit, type ArchiveValue, type ArchiveExchangeFormat } from "./archival-schemas";
+import { ARCHIVE_EXCHANGE_FORMATS, ARCHIVE_FIELD_KINDS, ARCHIVE_LEVELS, ARCHIVE_PROFILES, ARCHIVE_RECORD_TYPES, archiveFilename, archiveMime, formatArchive, makeArchiveSchema, normalizeArchiveEditorValues, parseOneValuePerLine, parseOneValuePerLineDraft, type ArchiveField, type ArchiveImportReview, type ArchiveProfile, type ArchiveRecordType, type ArchiveSchema, type ArchiveUnit, type ArchiveValue, type ArchiveExchangeFormat } from "./archival-schemas";
 import { makePublicNoticeHtml, makeTechnicalReportHtml, PUBLIC_NOTICE_FILENAME, REPORT_MIME, TECHNICAL_REPORT_FILENAME } from "./report-documents.ts";
 import { SERVICE_AREAS, SERVICE_RECORD_DEFINITIONS, formatServiceRegister, makeServiceRecord, serviceDefinition, serviceFilename, serviceMime, type ServiceArea, type ServiceFieldDefinition, type ServiceRecord, type ServiceValue } from "./service-register";
 import { consumeWorkspaceBackupReview, makeWorkspaceBackup, reviewWorkspaceBackup, workspaceBackupFilename, WORKSPACE_BACKUP_MIME, type WorkspaceBackupReview } from "./workspace-backups";
@@ -75,6 +74,8 @@ import { CONTINUITY_ACKNOWLEDGMENT, type ContinuityVerification } from "./contin
 import { canonicalDigest as canonicalEvidenceDigest, createEvidenceWarningManifest, EVIDENCE_TIME_BASIS } from "./evidence-authority.ts";
 import type { ExternalContinuityVerification } from "./external-continuity.ts";
 import { activateBrowserFile, type BrowserFileDisposition } from "./browser-file-activation.ts";
+import { prepareSourceImport } from "./source-preservation.ts";
+import { PreservationDownload, SourcePreservationRecovery } from "./source-preservation-controls.tsx";
 
 type View = "overview" | "records" | "services" | "archives" | "incidents" | "changes" | "reports";
 type OutputGate = { blocked: boolean; reason: string };
@@ -153,6 +154,8 @@ export function ContinuityLab() {
   const [selectedIncidentId, setSelectedIncidentId] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [review, setReview] = useState<ImportReview | null>(null);
+  const [sourcePackage, setSourcePackage] = useState<File | null>(null);
+  const [preservationError, setPreservationError] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [localWorkspaces, setLocalWorkspaces] = useState<LocalWorkspaceManifest[]>([]);
@@ -341,6 +344,8 @@ export function ContinuityLab() {
     setSelectedRecordId(activeRevision(next).records[0]?.id ?? "");
     setSelectedIncidentId(next.incidents[0]?.id ?? "");
     setReview(null);
+    setSourcePackage(null);
+    setPreservationError("");
     setAuditState("idle");
   }
 
@@ -381,10 +386,14 @@ export function ContinuityLab() {
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
+    setSourcePackage(null);
+    setPreservationError("");
     setReview(null);
     await runBusy(async () => {
-      const nextReview = await reviewImport(file);
-      setReview(nextReview);
+      const prepared = await prepareSourceImport(file, "catalog");
+      setReview(prepared.review);
+      setSourcePackage(prepared.packageFile);
+      setPreservationError(prepared.preservationError);
     });
   }
 
@@ -662,7 +671,9 @@ export function ContinuityLab() {
           <div className="import-source"><label className="file-field"><span>Choose library data</span><input ref={fileRef} type="file" aria-describedby="import-formats" accept=".xml,.marcxml,.json,.jsonld,.ris,.bib,.bibtex,.csv,.tsv,.mrk,.mrc.txt,application/xml,text/xml,application/json,application/ld+json,text/plain,text/csv,text/tab-separated-values" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void handleFile(file); }} disabled={busy} /></label><button className="secondary-button" type="button" onClick={() => resetWorkspace(true)} disabled={busy}>Sample data</button></div>
           <details className="import-formats"><summary id="import-formats">Supported formats</summary><p>MARCXML, MARC mnemonic, Dublin Core, MODS, IN KEEPING JSON, CSL-JSON, JSON-LD, RIS, BibTeX, CSV, and TSV.</p></details>
           <ReviewAnnouncements label="Import review" busy={busy} summary={review?.summary ?? ""} blocked={review?.blocked ?? false} />
+          <PreservationDownload key={review?.digest ?? sourcePackage?.name} file={sourcePackage} error={preservationError} />
           {review && <ImportReviewCard key={`${review.digest}:${review.filename}`} review={review} onApply={applyReviewedImport} busy={busy} />}
+          <SourcePreservationRecovery />
         </section>
       )}
 
@@ -1017,6 +1028,9 @@ function ArchivesView({ workspace, busy, outputGate, onSaveSchema, onRemoveSchem
   const [profile, setProfile] = useState<ArchiveProfile>("dacs");
   const [name, setName] = useState("");
   const [archiveReview, setArchiveReview] = useState<ArchiveImportReview | null>(null);
+  const [archiveSourcePackage, setArchiveSourcePackage] = useState<File | null>(null);
+  const [archivePreservationError, setArchivePreservationError] = useState("");
+  const [archiveImportBusy, setArchiveImportBusy] = useState(false);
   const [importError, setImportError] = useState("");
   const newSchemaDraftId = useDraftRegistration(Boolean(name.trim()) || profile !== "dacs", () => { setName(""); setProfile("dacs"); });
   const { confirmDiscard } = useContext(DraftGuardContext);
@@ -1051,7 +1065,7 @@ function ArchivesView({ workspace, busy, outputGate, onSaveSchema, onRemoveSchem
               <input
                 type="file"
                 accept=".xml,.ead,.csv,.json,application/xml,text/xml,text/csv,application/json"
-                disabled={busy}
+                disabled={busy || archiveImportBusy}
                 aria-describedby={importError ? "archive-import-error" : undefined}
                 onChange={async (event) => {
                   const input = event.currentTarget;
@@ -1059,17 +1073,26 @@ function ArchivesView({ workspace, busy, outputGate, onSaveSchema, onRemoveSchem
                   if (!file) return;
                   setImportError("");
                   setArchiveReview(null);
+                  setArchiveSourcePackage(null);
+                  setArchivePreservationError("");
+                  setArchiveImportBusy(true);
                   try {
-                    setArchiveReview(await reviewArchiveImport(file));
+                    const prepared = await prepareSourceImport(file, "archive");
+                    setArchiveReview(prepared.review);
+                    setArchiveSourcePackage(prepared.packageFile);
+                    setArchivePreservationError(prepared.preservationError);
                   } catch (error) {
                     setImportError(error instanceof Error ? error.message : "The archive could not be reviewed safely.");
                   } finally {
+                    setArchiveImportBusy(false);
                     input.value = "";
                   }
                 }}
               />
             </label>
             {importError && <p id="archive-import-error" className="field-error" role="alert">{importError}</p>}
+            {archiveImportBusy && <p role="status">Reviewing and preserving source…</p>}
+            <PreservationDownload key={archiveReview?.digest ?? archiveSourcePackage?.name} file={archiveSourcePackage} error={archivePreservationError} />
             {archiveReview && <div className={archiveReview.blocked ? "archive-review blocked" : "archive-review ready"} role={archiveReview.blocked ? "alert" : "status"} aria-atomic="true"><strong>{archiveReview.format}</strong><span>{archiveReview.summary}</span>{!archiveReview.blocked && archiveReview.schema && <EvidenceDispositionForm busy={busy} onSubmit={async (disposition) => { if (disposition.decision === "admit-unverified" && !confirmDiscard()) return; if (await onApplyImport(archiveReview, disposition)) { if (disposition.decision === "admit-unverified") setSelectedId(archiveReview.schema!.id); setArchiveReview(null); } }} />}</div>}
           </div>
         </aside>

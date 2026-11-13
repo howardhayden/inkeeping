@@ -1,5 +1,7 @@
 # Testing and release evidence
 
+Source-preservation coverage is in [`tests/source-preservation.test.mjs`](../tests/source-preservation.test.mjs): exact binary/text recovery, complete review snapshots, rejected-source retention, tamper and malformed-envelope rejection, and source/package capacity boundaries. Browser evidence for the initial release is in [the 2026-11-13 candidate record](releases/2026-11-13-source-preservation.md).
+
 ## Policy
 
 Tests establish repeatable evidence for specific requirements. They do not establish that all defects are absent, that a mapping is institutionally correct, that a live deployment matches source, or that the interface is accessible in every user agent.

@@ -4,6 +4,14 @@ This project follows Semantic Versioning for application releases. Interchange a
 
 ## Unreleased
 
+### Added
+
+- Catalog and archival review downloads now offer native source-preservation packages with exact original bytes, metadata, complete review snapshots and SHA-256 integrity checks. Import includes a recovery workflow that verifies the package and downloads the original source without applying stored review claims.
+
+### Maintenance
+
+- Updated affected build tooling and locked transitive dependencies to address dependency-audit findings before release.
+
 ### Changed
 
 - Normalized the active proprietary policy to the canonical 1.1 text and

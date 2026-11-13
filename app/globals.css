@@ -91,6 +91,11 @@ button:not(.primary-nav button):hover { filter: brightness(.94); }
 .import-formats { margin-top: .5rem; color: var(--muted); font-size: .76rem; }
 .import-formats summary { cursor: pointer; color: var(--green); }
 .import-formats p { margin: .3rem 0 0; }
+.source-preservation { margin-top: .8rem; padding-top: .8rem; border-top: 1px solid var(--line); font-size: .78rem; line-height: 1.5; }
+.source-preservation p { margin: .45rem 0; }
+.source-preservation summary { cursor: pointer; color: var(--green); }
+.source-preservation .source-digest, .source-recovery-result { overflow-wrap: anywhere; }
+.source-preservation .button-row { flex-wrap: wrap; }
 .field-help { margin: .15rem 0 .55rem; color: var(--muted); font-size: .76rem; }
 .import-review { margin-top: .8rem; padding-top: .8rem; border-top: 1px solid var(--line); }
 .import-review dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .7rem; margin: 0 0 .7rem; }
