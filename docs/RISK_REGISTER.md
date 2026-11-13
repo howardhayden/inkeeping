@@ -13,6 +13,8 @@ The deploying institution must assign named owners and acceptance authority. Rep
 
 ## Current risks
 
+Source-preservation packages extend R-01, R-04 and R-07: package reads are bounded to 80 MiB, originals to 32 MiB and review snapshots to 32 MiB; encoding/digest mismatches reject before recovery. Packages are plaintext and require an explicit completed download. Closing the page or selecting another source can discard an undownloaded package; workspace backups do not include it. SHA-256 checks are not authenticity checks. See [the format contract](SOURCE_PRESERVATION.md) and [recovery tests](../tests/source-preservation.test.mjs).
+
 | ID | Risk event | Inherent | Implemented controls | Residual | Disposition and release condition | Owner role | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | R-01 | A hostile XML/JSON/tabular import exhausts browser resources or exploits ambiguous parser behavior. | High / High | File ceilings; fatal UTF-8; XML pre-DOM limits; pre-parse duplicate-key/Unicode JSON quarantine; exact vocabularies/DTOs; format cardinality caps. | Moderate / High | **Mitigate.** Keep boundary tests at exact maxima; review parser changes; test on minimum supported hardware before broad deployment. | Engineering + security | [`app/xml-safety.ts`](../app/xml-safety.ts), [`app/json-safety.ts`](../app/json-safety.ts), [`tests/lab-core.test.mjs`](../tests/lab-core.test.mjs), [`tests/archival-schemas.test.mjs`](../tests/archival-schemas.test.mjs) |

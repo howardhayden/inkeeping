@@ -66,6 +66,8 @@ The only network request required by the application is acquisition of its stati
 | `app/output-freshness.ts` | Click-time named-save lease, exact reopened-snapshot rendering, repeated artifact/state checks, and single-use activation |
 | `app/lab-storage.ts` | IndexedDB manifests/generations/anchors, tokens, migration, quota, recovery, deletion, cross-tab signals, and final readonly activation fence |
 | `app/workspace-backups.ts` | Exact v2 backup envelope, v1 compatibility review, payload digest, and bounded workspace-payload recovery |
+| `app/source-preservation.ts` | Separate version-1 package of immutable original bytes and complete review; bounded digest verification and download-only recovery |
+| `app/source-preservation-controls.tsx` | Explicit package download and source recovery controls; no workspace activation or automatic persistence |
 | `app/recovery-transition.ts` | Exact non-activating backup/continuity review record that refuses inherited authority and requires a new lineage |
 | `app/report-documents.ts` | Deterministic Technical Report and fixed-projection Public Notice HTML |
 | `security-headers.ts` / `public/_headers` | Shared checkpoint policy and production static response policy |

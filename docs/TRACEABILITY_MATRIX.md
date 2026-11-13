@@ -1,5 +1,7 @@
 # Requirements traceability matrix
 
+Source recovery requirement `PRES-001`: preserve every selected source byte and the complete associated review in a separate versioned package; reject mismatched or malformed packages before downloading; never reuse stored review claims as Apply authority. Implementation: [`app/source-preservation.ts`](../app/source-preservation.ts) and [`app/source-preservation-controls.tsx`](../app/source-preservation-controls.tsx). Evidence: [`tests/source-preservation.test.mjs`](../tests/source-preservation.test.mjs) and the [candidate execution record](releases/2026-11-13-source-preservation.md). This does not extend crosswalk or workspace-retention guarantees.
+
 ## How to read this matrix
 
 This matrix links product/security requirements to implementation, evidence artifacts, and validation responsibilities. It distinguishes four evidence classes:

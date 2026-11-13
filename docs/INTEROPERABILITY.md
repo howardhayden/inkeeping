@@ -12,7 +12,9 @@ IN KEEPING separates reversible native exchange from useful but intentionally bo
 | Recorded interoperability evidence | Strict internal-consistency record for one source-controlled fixture profile and exact named receiver/package/diff/run claims. A derived `RECORDED_PASS` is not proof that the named execution occurred and is not product certification. | `in-keeping/interoperability-*` DTOs |
 | External validation | A release gate performed outside the application using official schemas, target templates, APIs, staging imports, and human review. | Every standards- or vendor-facing delivery |
 
-Only the native catalog packet and native archive package are described as lossless for their respective canonical models. “Lossless” does not include the catalog `source` evidence object, raw uploaded bytes, audit history, incidents, workspace configuration, or receiving-system fields that do not exist in the canonical model.
+Only the native catalog packet and native archive package are described as lossless for their respective canonical models. “Lossless” for those exchange formats does not include the catalog `source` evidence object, raw uploaded bytes, audit history, incidents, workspace configuration, or receiving-system fields that do not exist in the canonical model.
+
+The separate [source-preservation package](SOURCE_PRESERVATION.md) retains exact uploaded bytes and the complete catalog or archival review snapshot. Its recovery path checks both package and source digests and downloads the original without importing the stored review. This provides original-source recoverability within its documented limits; it does not change crosswalk expressiveness or receiving-system compatibility.
 
 ## Interoperability evidence chain
 
